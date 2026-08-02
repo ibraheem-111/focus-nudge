@@ -68,7 +68,8 @@ focus-nudge/
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `CONFIG_DIR: string`, `PATHS: {config, state, quotes, log}` (all absolute strings), `DEFAULTS: object`, `loadConfig(readFile?) -> object`, `saveConfig(cfg) -> void`.
+- Produces: `CONFIG_DIR: string`, `PATHS: {config, state, quotes, log}` (all absolute strings), `DEFAULTS: object`, `mergeConfig(raw) -> object`, `loadConfig(configPath = PATHS.config) -> object`, `saveConfig(cfg, configPath = PATHS.config) -> void`, `writeAtomic(file, text) -> void`.
+- The path parameters on `loadConfig`/`saveConfig` exist so tests can exercise them against a scratch directory instead of the real `~/.config/focus-nudge`. Callers in later tasks invoke them with no arguments and get the real paths. This matches `createServer`'s path-injection idiom in Task 8.
 
 - [ ] **Step 1: Create `package.json`**
 
@@ -80,7 +81,7 @@ focus-nudge/
   "type": "module",
   "description": "A pause, a quote, and your unfinished tasks before you open a distraction.",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "daemon": "node daemon/server.js"
   },
   "engines": { "node": ">=22" }
@@ -127,6 +128,71 @@ test('mergeConfig ignores unknown keys and non-objects', () => {
   assert.equal(mergeConfig(null).port, 7373)
   assert.equal(mergeConfig('nope').port, 7373)
 })
+
+// The disk-facing half of the module. These use a scratch directory — never
+// the real CONFIG_DIR, which holds the user's actual settings.
+test('writeAtomic writes the file and leaves no temp file behind', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-cfg-'))
+  const file = path.join(dir, 'thing.json')
+  writeAtomic(file, '{"a":1}')
+  assert.equal(fs.readFileSync(file, 'utf8'), '{"a":1}')
+  assert.deepEqual(fs.readdirSync(dir), ['thing.json'], 'the .tmp file was renamed, not left')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('writeAtomic overwrites an existing file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-cfg-'))
+  const file = path.join(dir, 'thing.json')
+  writeAtomic(file, 'first')
+  writeAtomic(file, 'second')
+  assert.equal(fs.readFileSync(file, 'utf8'), 'second')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('saveConfig then loadConfig round-trips through a scratch path', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-cfg-'))
+  const file = path.join(dir, 'nested', 'config.json')
+  saveConfig({ ...DEFAULTS, workMinutes: 50 }, file)
+  assert.equal(loadConfig(file).workMinutes, 50, 'saveConfig creates parent dirs and loadConfig reads back')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('loadConfig falls back to DEFAULTS for a missing file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-cfg-'))
+  assert.deepEqual(loadConfig(path.join(dir, 'nope.json')), DEFAULTS)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('loadConfig falls back to DEFAULTS for malformed json', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-cfg-'))
+  const file = path.join(dir, 'config.json')
+  fs.writeFileSync(file, '{ not json')
+  assert.deepEqual(loadConfig(file), DEFAULTS)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('loadConfig fills partial config from DEFAULTS', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-cfg-'))
+  const file = path.join(dir, 'config.json')
+  fs.writeFileSync(file, JSON.stringify({ port: 9999 }))
+  const cfg = loadConfig(file)
+  assert.equal(cfg.port, 9999)
+  assert.equal(cfg.workMinutes, 25, 'gaps come from DEFAULTS')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+```
+
+The imports at the top of the test file must therefore be:
+
+```js
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  DEFAULTS, PATHS, CONFIG_DIR, mergeConfig, loadConfig, saveConfig, writeAtomic,
+} from '../daemon/config.js'
 ```
 
 - [ ] **Step 3: Run test to verify it fails**
@@ -170,17 +236,19 @@ export function mergeConfig(raw) {
   return out
 }
 
-export function loadConfig() {
+// The path is a parameter so tests can point at a scratch directory. Real
+// callers pass nothing and get ~/.config/focus-nudge/config.json.
+export function loadConfig(configPath = PATHS.config) {
   try {
-    return mergeConfig(JSON.parse(fs.readFileSync(PATHS.config, 'utf8')))
+    return mergeConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')))
   } catch {
     return { ...DEFAULTS }
   }
 }
 
-export function saveConfig(cfg) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true })
-  writeAtomic(PATHS.config, JSON.stringify(cfg, null, 2))
+export function saveConfig(cfg, configPath = PATHS.config) {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  writeAtomic(configPath, JSON.stringify(cfg, null, 2))
 }
 
 export function writeAtomic(file, text) {
@@ -193,7 +261,7 @@ export function writeAtomic(file, text) {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `node --test test/config.test.js`
-Expected: PASS, 4 tests
+Expected: PASS, 10 tests
 
 - [ ] **Step 6: Write `README.md`**
 
@@ -1370,7 +1438,7 @@ Expected: PASS, 16 tests
 - [ ] **Step 5: Run the whole suite**
 
 Run: `npm test`
-Expected: PASS, 62 tests across three files (config 4, core 42, policy 16)
+Expected: PASS, 68 tests across three files (config 10, core 42, policy 16)
 
 - [ ] **Step 6: Commit**
 
@@ -1904,7 +1972,7 @@ Expected: PASS, 17 tests
 - [ ] **Step 5: Run the whole suite and start the daemon by hand**
 
 Run: `npm test`
-Expected: PASS, 79 tests
+Expected: PASS, 85 tests
 
 Run: `node daemon/server.js &` then `curl -s localhost:7373/state | head -c 200` then `kill %1`
 Expected: JSON with `"phase":"IDLE"`
@@ -3344,8 +3412,8 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS, 84 tests across five files, zero failures
-(config 4, core 42, policy 16, server smoke 17, quotes 5)
+Expected: PASS, 90 tests across five files, zero failures
+(config 10, core 42, policy 16, server smoke 17, quotes 5)
 
 - [ ] **Step 2: Walk the whole loop and record the result**
 
