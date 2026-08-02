@@ -947,6 +947,27 @@ test('task text is trimmed', () => {
   assert.equal(s.tasks[0].text, 'ship it')
 })
 
+test('TASK_CLEAR empties the list silently and touches nothing else', () => {
+  // The silent discard is deliberate and asymmetric with openLongBreak, which
+  // logs tasks_archived. Clearing is an explicit user action; a phase
+  // transition is involuntary, so only the latter needs a record. This test
+  // pins that choice so it cannot drift.
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'b' }, T0, CFG).state
+  s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
+  s = reduce(s, { type: 'START' }, T0, CFG).state
+
+  const { state, effects } = reduce(s, { type: 'TASK_CLEAR' }, T0, CFG)
+  assert.deepEqual(state.tasks, [])
+  assert.deepEqual(effects, [], 'an explicit clear is silent — no archive, no log')
+  assert.equal(state.nextTaskId, 3, 'ids do not rewind, so a cleared id is never reused')
+  assert.equal(state.queue.length, 1, 'the saved-links queue is untouched')
+  assert.equal(state.phase, PHASE.WORK, 'the running block is untouched')
+
+  const again = reduce(state, { type: 'TASK_CLEAR' }, T0, CFG)
+  assert.deepEqual(again.state.tasks, [], 'idempotent on an already-empty list')
+})
+
 test('QUEUE_ADD saves a link and skips duplicates', () => {
   let s = reduce(initialState(), { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
   assert.deepEqual(s.queue, [{ url: 'https://reddit.com/r/x', title: 'x', savedAt: T0 }])
@@ -1152,7 +1173,7 @@ function normaliseSite(raw) {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 39 tests
+Expected: PASS, 40 tests
 
 - [ ] **Step 6: Commit**
 
@@ -1283,7 +1304,7 @@ export function view(state, now, config) {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 45 tests
+Expected: PASS, 46 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1479,7 +1500,7 @@ Expected: PASS, 16 tests
 - [ ] **Step 5: Run the whole suite**
 
 Run: `npm test`
-Expected: PASS, 71 tests across three files (config 10, core 45, policy 16)
+Expected: PASS, 72 tests across three files (config 10, core 46, policy 16)
 
 - [ ] **Step 6: Commit**
 
@@ -2013,7 +2034,7 @@ Expected: PASS, 17 tests
 - [ ] **Step 5: Run the whole suite and start the daemon by hand**
 
 Run: `npm test`
-Expected: PASS, 88 tests
+Expected: PASS, 89 tests
 
 Run: `node daemon/server.js &` then `curl -s localhost:7373/state | head -c 200` then `kill %1`
 Expected: JSON with `"phase":"IDLE"`
@@ -3453,8 +3474,8 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS, 93 tests across five files, zero failures
-(config 10, core 45, policy 16, server smoke 17, quotes 5)
+Expected: PASS, 94 tests across five files, zero failures
+(config 10, core 46, policy 16, server smoke 17, quotes 5)
 
 - [ ] **Step 2: Walk the whole loop and record the result**
 
