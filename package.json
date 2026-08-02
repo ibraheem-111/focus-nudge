@@ -5,7 +5,7 @@
   "type": "module",
   "description": "A pause, a quote, and your unfinished tasks before you open a distraction.",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "daemon": "node daemon/server.js"
   },
   "engines": { "node": ">=22" }
