@@ -652,6 +652,26 @@ test('SNOOZE accepts fractional hours and rejects nonsense', () => {
   assert.equal(nan.state.phase, PHASE.IDLE)
 })
 
+test('SNOOZE ends the cycle on entry, like a long break', () => {
+  // Both sanctioned windows (LONG_BREAK, SNOOZED) end the cycle. Doing it on
+  // entry rather than on expiry is what keeps the dashboard honest.
+  const midCycle = { ...initialState(), phase: PHASE.WORK, endsAt: T0 + MIN, blocksCompleted: 2 }
+  const { state } = reduce(midCycle, { type: 'SNOOZE', hours: 2 }, T0, CFG)
+  assert.equal(state.phase, PHASE.SNOOZED)
+  assert.equal(state.blocksCompleted, 0, 'the cycle ends when the snooze begins')
+})
+
+test('snooze expiry changes nothing the user can see except the phase', () => {
+  let s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
+  s = { ...s, tasks: [{ id: 1, text: 'survive me', done: false }], nextTaskId: 2, graces: { 'reddit.com': T0 + 90 * MIN } }
+  const { state } = settle(s, T0 + 60 * MIN, CFG)
+  assert.equal(state.phase, PHASE.IDLE)
+  assert.deepEqual(state.tasks, [{ id: 1, text: 'survive me', done: false }], 'tasks survive')
+  assert.equal(state.nextTaskId, 2, 'task ids do not rewind')
+  assert.equal(state.graces['reddit.com'], T0 + 90 * MIN, 'an unexpired grace survives')
+  assert.equal(state.blocksCompleted, 0, 'already 0 from entry — nothing silently lost here')
+})
+
 test('settle returns snooze to idle once it expires', () => {
   const s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
   const before = settle(s, T0 + 59 * MIN, CFG)
@@ -723,6 +743,11 @@ Insert this case immediately before `case 'STOP':`
         paused: false,
         pausedRemainingMs: null,
         expiredNotified: false,
+        // A snooze is a sanctioned window, exactly like a long break, so it
+        // ends the cycle the same way BREAK_LONG does. Resetting on entry
+        // rather than on expiry matters: otherwise the dashboard shows
+        // "block 2 of 4" for the whole snooze and then silently zeroes it.
+        blocksCompleted: 0,
       }
       effects.push({
         type: 'notify',
@@ -778,7 +803,7 @@ export function settle(state, now, config) {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 19 tests
+Expected: PASS, 21 tests
 
 - [ ] **Step 6: Commit**
 
@@ -857,7 +882,7 @@ Expected: FAIL — `GRACE` hits the default case, `state.graces` stays `{}`
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 24 tests
+Expected: PASS, 26 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1127,7 +1152,7 @@ function normaliseSite(raw) {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 37 tests
+Expected: PASS, 39 tests
 
 - [ ] **Step 6: Commit**
 
@@ -1258,7 +1283,7 @@ export function view(state, now, config) {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 43 tests
+Expected: PASS, 45 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1454,7 +1479,7 @@ Expected: PASS, 16 tests
 - [ ] **Step 5: Run the whole suite**
 
 Run: `npm test`
-Expected: PASS, 69 tests across three files (config 10, core 43, policy 16)
+Expected: PASS, 71 tests across three files (config 10, core 45, policy 16)
 
 - [ ] **Step 6: Commit**
 
@@ -1988,7 +2013,7 @@ Expected: PASS, 17 tests
 - [ ] **Step 5: Run the whole suite and start the daemon by hand**
 
 Run: `npm test`
-Expected: PASS, 86 tests
+Expected: PASS, 88 tests
 
 Run: `node daemon/server.js &` then `curl -s localhost:7373/state | head -c 200` then `kill %1`
 Expected: JSON with `"phase":"IDLE"`
@@ -3428,8 +3453,8 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS, 91 tests across five files, zero failures
-(config 10, core 43, policy 16, server smoke 17, quotes 5)
+Expected: PASS, 93 tests across five files, zero failures
+(config 10, core 45, policy 16, server smoke 17, quotes 5)
 
 - [ ] **Step 2: Walk the whole loop and record the result**
 
