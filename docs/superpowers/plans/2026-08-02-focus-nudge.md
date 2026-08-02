@@ -1327,7 +1327,7 @@ git commit -m "feat: add view projection for the state endpoint"
   - `NUDGE_PHASES: Set<string>`
   - `matchSite(url: string, sites: string[]) -> string | null` — the matched site, or null.
   - `decide({url, phase, graces, sites, now}) -> {action: 'allow'|'nudge', site: string|null, reason: string}`
-  - Reasons: `'not-web'`, `'bad-url'`, `'no-match'`, `'sanctioned'`, `'grace'`, `'nudge'`, `'no-state'`.
+  - Reasons: `'no-match'`, `'sanctioned'`, `'grace'`, `'nudge'`, `'no-state'`. A non-web scheme and an unparseable URL both collapse into `'no-match'`, since `matchSite` returns null for each — the field is diagnostic, and no caller branches on it, so distinguishing them would be unused precision.
 
 - [ ] **Step 1: Write the failing test**
 
