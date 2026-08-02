@@ -140,6 +140,11 @@ export function reduce(state, action, now, config) {
         paused: false,
         pausedRemainingMs: null,
         expiredNotified: false,
+        // A snooze is a sanctioned window, exactly like a long break, so it
+        // ends the cycle the same way BREAK_LONG does. Resetting on entry
+        // rather than on expiry matters: otherwise the dashboard shows
+        // "block 2 of 4" for the whole snooze and then silently zeroes it.
+        blocksCompleted: 0,
       }
       effects.push({
         type: 'notify',

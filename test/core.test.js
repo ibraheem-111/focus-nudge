@@ -123,6 +123,26 @@ test('SNOOZE accepts fractional hours and rejects nonsense', () => {
   assert.equal(nan.state.phase, PHASE.IDLE)
 })
 
+test('SNOOZE ends the cycle on entry, like a long break', () => {
+  // Both sanctioned windows (LONG_BREAK, SNOOZED) end the cycle. Doing it on
+  // entry rather than on expiry is what keeps the dashboard honest.
+  const midCycle = { ...initialState(), phase: PHASE.WORK, endsAt: T0 + MIN, blocksCompleted: 2 }
+  const { state } = reduce(midCycle, { type: 'SNOOZE', hours: 2 }, T0, CFG)
+  assert.equal(state.phase, PHASE.SNOOZED)
+  assert.equal(state.blocksCompleted, 0, 'the cycle ends when the snooze begins')
+})
+
+test('snooze expiry changes nothing the user can see except the phase', () => {
+  let s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
+  s = { ...s, tasks: [{ id: 1, text: 'survive me', done: false }], nextTaskId: 2, graces: { 'reddit.com': T0 + 90 * MIN } }
+  const { state } = settle(s, T0 + 60 * MIN, CFG)
+  assert.equal(state.phase, PHASE.IDLE)
+  assert.deepEqual(state.tasks, [{ id: 1, text: 'survive me', done: false }], 'tasks survive')
+  assert.equal(state.nextTaskId, 2, 'task ids do not rewind')
+  assert.equal(state.graces['reddit.com'], T0 + 90 * MIN, 'an unexpired grace survives')
+  assert.equal(state.blocksCompleted, 0, 'already 0 from entry — nothing silently lost here')
+})
+
 test('settle returns snooze to idle once it expires', () => {
   const s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
   const before = settle(s, T0 + 59 * MIN, CFG)
