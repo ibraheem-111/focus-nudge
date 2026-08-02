@@ -1,0 +1,12 @@
+{
+  "name": "focus-nudge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A pause, a quote, and your unfinished tasks before you open a distraction.",
+  "scripts": {
+    "test": "node --test test/",
+    "daemon": "node daemon/server.js"
+  },
+  "engines": { "node": ">=22" }
+}
