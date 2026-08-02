@@ -130,6 +130,26 @@ export function reduce(state, action, now, config) {
       }
     }
 
+    case 'SNOOZE': {
+      const hours = Number(action.hours)
+      if (!Number.isFinite(hours) || hours <= 0) return { state, effects }
+      const next = {
+        ...state,
+        phase: PHASE.SNOOZED,
+        endsAt: now + hours * 60 * MIN,
+        paused: false,
+        pausedRemainingMs: null,
+        expiredNotified: false,
+      }
+      effects.push({
+        type: 'notify',
+        title: 'Nudging off',
+        body: `Back on in ${hours} hour${hours === 1 ? '' : 's'}.`,
+      })
+      effects.push({ type: 'log', event: 'snooze', data: { hours } })
+      return { state: openLongBreak(next, effects), effects }
+    }
+
     case 'STOP': {
       effects.push({ type: 'log', event: 'phase', data: { phase: PHASE.IDLE, from: state.phase } })
       return {
@@ -150,4 +170,41 @@ export function openCount(state) {
 // Placeholder until Task 5 gives the long break its queue-and-archive behaviour.
 function openLongBreak(state, _effects) {
   return state
+}
+
+const EXPIRING_PHASES = new Set([PHASE.WORK, PHASE.SHORT_BREAK, PHASE.LONG_BREAK])
+
+export function settle(state, now, config) {
+  const effects = []
+  let next = state
+
+  if (next.phase === PHASE.SNOOZED && next.endsAt !== null && now >= next.endsAt) {
+    next = { ...initialState(), tasks: next.tasks, nextTaskId: next.nextTaskId, queue: next.queue, graces: next.graces }
+    effects.push({ type: 'notify', title: 'Nudging back on', body: 'Snooze finished.' })
+    effects.push({ type: 'log', event: 'snooze_end', data: {} })
+  }
+
+  if (
+    EXPIRING_PHASES.has(next.phase) &&
+    next.endsAt !== null &&
+    now >= next.endsAt &&
+    !next.expiredNotified
+  ) {
+    next = { ...next, expiredNotified: true }
+    effects.push({
+      type: 'notify',
+      title: `${LABEL[next.phase]} finished`,
+      body: next.phase === PHASE.WORK ? 'Take your break.' : 'Ready when you are.',
+    })
+  }
+
+  const live = {}
+  for (const [site, until] of Object.entries(next.graces)) {
+    if (until > now) live[site] = until
+  }
+  if (Object.keys(live).length !== Object.keys(next.graces).length) {
+    next = { ...next, graces: live }
+  }
+
+  return { state: next, effects }
 }

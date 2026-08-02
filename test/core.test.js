@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { PHASE, initialState, reduce } from '../daemon/core.js'
+import { PHASE, initialState, reduce, settle } from '../daemon/core.js'
 import { DEFAULTS } from '../daemon/config.js'
 
 const CFG = DEFAULTS
@@ -106,4 +106,69 @@ test('an unknown action leaves the state untouched', () => {
   const { state, effects } = reduce(s, { type: 'WAT' }, T0, CFG)
   assert.deepEqual(state, s)
   assert.deepEqual(effects, [])
+})
+
+test('SNOOZE enters the snoozed phase for the requested hours', () => {
+  const { state, effects } = reduce(initialState(), { type: 'SNOOZE', hours: 2 }, T0, CFG)
+  assert.equal(state.phase, PHASE.SNOOZED)
+  assert.equal(state.endsAt, T0 + 2 * 60 * MIN)
+  assert.ok(effects.some(e => e.type === 'notify'))
+})
+
+test('SNOOZE accepts fractional hours and rejects nonsense', () => {
+  assert.equal(reduce(initialState(), { type: 'SNOOZE', hours: 0.5 }, T0, CFG).state.endsAt, T0 + 30 * MIN)
+  const bad = reduce(initialState(), { type: 'SNOOZE', hours: -1 }, T0, CFG)
+  assert.equal(bad.state.phase, PHASE.IDLE, 'a negative snooze is ignored')
+  const nan = reduce(initialState(), { type: 'SNOOZE', hours: 'soon' }, T0, CFG)
+  assert.equal(nan.state.phase, PHASE.IDLE)
+})
+
+test('settle returns snooze to idle once it expires', () => {
+  const s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
+  const before = settle(s, T0 + 59 * MIN, CFG)
+  assert.equal(before.state.phase, PHASE.SNOOZED, 'still snoozed a minute early')
+
+  const after = settle(s, T0 + 60 * MIN, CFG)
+  assert.equal(after.state.phase, PHASE.IDLE, 'expires exactly on the boundary')
+  assert.ok(after.effects.some(e => e.type === 'notify'))
+})
+
+test('settle never auto-advances a work block', () => {
+  const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const { state } = settle(s, T0 + 99 * MIN, CFG)
+  assert.equal(state.phase, PHASE.WORK, 'overrun holds its phase')
+})
+
+test('settle notifies exactly once when a phase expires', () => {
+  const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const first = settle(s, T0 + 25 * MIN, CFG)
+  assert.equal(first.state.expiredNotified, true)
+  assert.ok(first.effects.some(e => e.type === 'notify'))
+
+  const second = settle(first.state, T0 + 26 * MIN, CFG)
+  assert.deepEqual(second.effects, [], 'no repeat notification')
+  assert.deepEqual(second.state, first.state, 'settle is idempotent')
+})
+
+test('settle is a no-op while idle', () => {
+  const s = initialState()
+  const { state, effects } = settle(s, T0 + 999 * MIN, CFG)
+  assert.deepEqual(state, s)
+  assert.deepEqual(effects, [])
+})
+
+// Pins a semantic the Task 2 review surfaced as undocumented: START means
+// "resume if paused, otherwise begin a work block". Mid-break that is the
+// useful "done resting" action; mid-work it restarts the block, discarding
+// progress. That is a deliberate choice, not an accident — this test exists so
+// it cannot change silently.
+test('START restarts an active work block and ends a break early', () => {
+  const running = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const restarted = reduce(running, { type: 'START' }, T0 + 10 * MIN, CFG).state
+  assert.equal(restarted.phase, PHASE.WORK)
+  assert.equal(restarted.endsAt, T0 + 10 * MIN + 25 * MIN, 'a fresh 25 minutes, not the old endsAt')
+
+  const onBreak = { ...initialState(), phase: PHASE.SHORT_BREAK, endsAt: T0 + 5 * MIN }
+  const fromBreak = reduce(onBreak, { type: 'START' }, T0, CFG).state
+  assert.equal(fromBreak.phase, PHASE.WORK, 'START ends a break early rather than being ignored')
 })
