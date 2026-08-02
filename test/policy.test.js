@@ -97,3 +97,45 @@ test('a missing site list falls back to the built-in defaults', () => {
   assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: null, now: T0 }).action, 'nudge')
   assert.equal(decide({ url: 'https://example.com/', phase: 'WORK', graces: {}, sites: null, now: T0 }).action, 'allow')
 })
+
+// The site list is user-editable through the popup, the CLI, and by hand in
+// config.json, so a malformed entry must not silently disable protection.
+
+test('a leading-dot entry still protects its domain', () => {
+  // normaliseSite's regex accepts ".reddit.com", so this reaches the matcher
+  // from the real popup. Without stripping, host.endsWith("..reddit.com") is
+  // never true and the site the user just asked to nudge goes unwatched.
+  assert.equal(matchSite('https://reddit.com/', ['.reddit.com']), 'reddit.com')
+  assert.equal(matchSite('https://old.reddit.com/', ['.reddit.com']), 'reddit.com')
+  assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: ['.reddit.com'], now: T0 }).action, 'nudge')
+})
+
+test('a bare TLD entry matches nothing rather than everything', () => {
+  assert.equal(matchSite('https://google.com/', ['com']), null)
+  assert.equal(matchSite('https://reddit.com/', ['com']), null)
+  assert.equal(matchSite('https://anything.co.uk/', ['uk']), null)
+})
+
+test('blank and non-string entries are skipped, not coerced', () => {
+  assert.equal(matchSite('https://reddit.com/', ['', '   ']), null)
+  assert.equal(matchSite('https://null.com/', [null, undefined, 42, {}]), null)
+  assert.equal(matchSite('https://reddit.com/', [null, 'reddit.com']), 'reddit.com', 'a bad entry does not stop later good ones')
+})
+
+test('an explicitly empty site list watches nothing', () => {
+  // Distinct from a missing list: [] is the user clearing their sites, and the
+  // popup would otherwise show an empty list while Reddit still got nudged.
+  assert.equal(matchSite('https://reddit.com/', []), null)
+  assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: [], now: T0 }).action, 'allow')
+})
+
+test('a non-array site list falls back rather than watching nothing', () => {
+  // Malformed config is missing data, so stay closed.
+  for (const junk of ['reddit.com', 42, {}, true]) {
+    assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: junk, now: T0 }).action, 'nudge', `sites=${JSON.stringify(junk)}`)
+  }
+})
+
+test('a trailing-dot FQDN host still matches', () => {
+  assert.equal(matchSite('https://reddit.com./', ['reddit.com']), 'reddit.com')
+})

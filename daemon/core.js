@@ -318,8 +318,13 @@ function openLongBreak(state, effects) {
 function normaliseSite(raw) {
   let s = String(raw || '').trim().toLowerCase()
   if (!s) return ''
-  s = s.replace(/^[a-z]+:\/\//, '').split('/')[0].split('?')[0].replace(/^www\./, '')
-  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(s) ? s : ''
+  s = s.replace(/^[a-z]+:\/\//, '').split('/')[0].split('?')[0]
+  s = s.split('@').pop().split(':')[0]          // drop any userinfo and port
+  s = s.replace(/^www\./, '').replace(/^\.+/, '').replace(/\.+$/, '')
+  // Canonicalising here is what keeps a stored entry matchable. The old
+  // pattern accepted ".reddit.com", which matchSite could then never match —
+  // silently unwatching the very site the user had just added.
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(s) ? s : ''
 }
 
 const EXPIRING_PHASES = new Set([PHASE.WORK, PHASE.SHORT_BREAK, PHASE.LONG_BREAK])

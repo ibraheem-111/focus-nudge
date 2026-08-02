@@ -353,6 +353,25 @@ test('SITE_ADD strips a scheme and path if one is pasted in', () => {
     ['reddit.com', 'youtube.com', 'news.ycombinator.com'])
 })
 
+test('SITE_ADD canonicalises entries that would otherwise never match', () => {
+  // sites: [] so the leading-dot case (which canonicalises to the same
+  // domain DEFAULTS already ships, "reddit.com") isn't silently deduped away
+  // before the assertion below ever gets to look at it.
+  const cfg = { ...CFG, sites: [] }
+  const added = site => reduce(initialState(), { type: 'SITE_ADD', site }, T0, cfg)
+    .effects.find(e => e.type === 'setSites').sites.at(-1)
+
+  assert.equal(added('.reddit.com'), 'reddit.com', 'a leading dot is stripped, not stored')
+  assert.equal(added('news.ycombinator.com.'), 'news.ycombinator.com', 'a trailing dot too')
+  assert.equal(added('news.ycombinator.com:8080'), 'news.ycombinator.com', 'and a port')
+  assert.equal(added('user@news.ycombinator.com'), 'news.ycombinator.com', 'and userinfo')
+
+  // A bare TLD must never be storable — in the matcher it would otherwise
+  // match every domain in that TLD.
+  const bare = reduce(initialState(), { type: 'SITE_ADD', site: 'com' }, T0, cfg)
+  assert.deepEqual(bare.effects, [], 'rejected outright, no setSites effect')
+})
+
 test('view reports a running block with positive remaining time', () => {
   const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
   const v = view(s, T0 + 10 * MIN, CFG)
