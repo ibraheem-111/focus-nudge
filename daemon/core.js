@@ -155,6 +155,16 @@ export function reduce(state, action, now, config) {
       return { state: openLongBreak(next, effects), effects }
     }
 
+    case 'GRACE': {
+      const site = String(action.site || '').trim()
+      if (!site) return { state, effects }
+      effects.push({ type: 'log', event: 'continued', data: { site } })
+      return {
+        state: { ...state, graces: { ...state.graces, [site]: now + config.graceMinutes * MIN } },
+        effects,
+      }
+    }
+
     case 'STOP': {
       effects.push({ type: 'log', event: 'phase', data: { phase: PHASE.IDLE, from: state.phase } })
       return {

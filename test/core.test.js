@@ -192,3 +192,33 @@ test('START restarts an active work block and ends a break early', () => {
   const fromBreak = reduce(onBreak, { type: 'START' }, T0, CFG).state
   assert.equal(fromBreak.phase, PHASE.WORK, 'START ends a break early rather than being ignored')
 })
+
+test('GRACE grants a five minute pass for one site only', () => {
+  const { state } = reduce(initialState(), { type: 'GRACE', site: 'reddit.com' }, T0, CFG)
+  assert.equal(state.graces['reddit.com'], T0 + 5 * MIN)
+  assert.equal(state.graces['youtube.com'], undefined, 'a reddit pass does not unlock youtube')
+})
+
+test('GRACE does not disturb the running phase', () => {
+  const work = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const { state } = reduce(work, { type: 'GRACE', site: 'reddit.com' }, T0 + MIN, CFG)
+  assert.equal(state.phase, PHASE.WORK)
+  assert.equal(state.endsAt, work.endsAt)
+})
+
+test('GRACE ignores a missing site', () => {
+  const { state } = reduce(initialState(), { type: 'GRACE', site: '' }, T0, CFG)
+  assert.deepEqual(state.graces, {})
+})
+
+test('a later GRACE for the same site extends the pass', () => {
+  let s = reduce(initialState(), { type: 'GRACE', site: 'reddit.com' }, T0, CFG).state
+  s = reduce(s, { type: 'GRACE', site: 'reddit.com' }, T0 + 4 * MIN, CFG).state
+  assert.equal(s.graces['reddit.com'], T0 + 9 * MIN)
+})
+
+test('settle prunes graces once they lapse', () => {
+  const s = reduce(initialState(), { type: 'GRACE', site: 'reddit.com' }, T0, CFG).state
+  assert.equal(settle(s, T0 + 4 * MIN, CFG).state.graces['reddit.com'], T0 + 5 * MIN)
+  assert.deepEqual(settle(s, T0 + 5 * MIN, CFG).state.graces, {}, 'lapses on the boundary')
+})
