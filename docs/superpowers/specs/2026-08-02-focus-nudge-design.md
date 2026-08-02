@@ -177,8 +177,11 @@ independently.
    `(phase, url, graces, now) → "allow" | "nudge"`. Unit-tested under Node and
    imported by the service worker, so the decision logic is testable without a
    browser.
-4. **`extension/`** — MV3 service worker polling `/state` every 15 s and on
-   navigation, plus `interstitial.html`, `newtab.html`, `popup.html`.
+4. **`extension/`** — MV3 service worker, plus `interstitial.html`,
+   `newtab.html`, `popup.html`. The worker refreshes state on every navigation
+   (a loopback fetch costs about a millisecond) and keeps a `chrome.alarms`
+   heartbeat at the MV3 minimum of 30 s to survive being unloaded. Open pages
+   poll once a second so their countdowns stay live.
 5. **`cli/focus`** — thin HTTP client:
    `start pause skip stop break off status task sites stats`.
 6. **`systemd/focus-nudge.service`** — a `systemctl --user` unit, restart on
@@ -223,7 +226,7 @@ missing or empty `quotes.txt` falls through to the bundled list; a missing
 ~/.config/focus-nudge/log.jsonl      nudges, continues, blocks completed → focus stats
 ```
 
-Roughly 60 curated quotes ship inside the extension, so it is useful before a
+Around 45 curated quotes ship inside the extension, so it is useful before a
 single personal quote is written. `quotes.txt` is additive, not a replacement.
 
 ## Testing
