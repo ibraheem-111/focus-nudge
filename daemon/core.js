@@ -165,6 +165,84 @@ export function reduce(state, action, now, config) {
       }
     }
 
+    case 'BREAK_LONG': {
+      const next = openLongBreak(enter(state, PHASE.LONG_BREAK, now, config), effects)
+      effects.push({
+        type: 'notify',
+        title: 'Long break',
+        body: `${minutes(phaseDurationMs(PHASE.LONG_BREAK, config))} minutes. Sites are open.`,
+      })
+      effects.push({ type: 'log', event: 'phase', data: { phase: PHASE.LONG_BREAK, from: state.phase } })
+      return { state: { ...next, blocksCompleted: 0 }, effects }
+    }
+
+    case 'TASK_ADD': {
+      const text = String(action.text || '').trim()
+      if (!text) return { state, effects }
+      return {
+        state: {
+          ...state,
+          tasks: [...state.tasks, { id: state.nextTaskId, text, done: false }],
+          nextTaskId: state.nextTaskId + 1,
+        },
+        effects,
+      }
+    }
+
+    case 'TASK_TOGGLE': {
+      if (!state.tasks.some(t => t.id === action.id)) return { state, effects }
+      return {
+        state: {
+          ...state,
+          tasks: state.tasks.map(t => (t.id === action.id ? { ...t, done: !t.done } : t)),
+        },
+        effects,
+      }
+    }
+
+    case 'TASK_REMOVE': {
+      if (!state.tasks.some(t => t.id === action.id)) return { state, effects }
+      return { state: { ...state, tasks: state.tasks.filter(t => t.id !== action.id) }, effects }
+    }
+
+    case 'TASK_CLEAR':
+      return { state: { ...state, tasks: [] }, effects }
+
+    case 'QUEUE_ADD': {
+      const url = String(action.url || '').trim()
+      if (!url || state.queue.some(q => q.url === url)) return { state, effects }
+      effects.push({ type: 'log', event: 'saved_for_later', data: { url } })
+      return {
+        state: {
+          ...state,
+          queue: [...state.queue, { url, title: String(action.title || '').trim(), savedAt: now }],
+        },
+        effects,
+      }
+    }
+
+    case 'QUEUE_DRAIN': {
+      if (state.queue.length === 0) return { state, effects }
+      effects.push({ type: 'openUrls', urls: state.queue.map(q => q.url) })
+      effects.push({ type: 'log', event: 'queue_drained', data: { count: state.queue.length } })
+      return { state: { ...state, queue: [] }, effects }
+    }
+
+    case 'SITE_ADD': {
+      const site = normaliseSite(action.site)
+      if (!site) return { state, effects }
+      const sites = config.sites.includes(site) ? [...config.sites] : [...config.sites, site]
+      effects.push({ type: 'setSites', sites })
+      return { state, effects }
+    }
+
+    case 'SITE_REMOVE': {
+      const site = normaliseSite(action.site)
+      if (!site) return { state, effects }
+      effects.push({ type: 'setSites', sites: config.sites.filter(s => s !== site) })
+      return { state, effects }
+    }
+
     case 'STOP': {
       effects.push({ type: 'log', event: 'phase', data: { phase: PHASE.IDLE, from: state.phase } })
       return {
@@ -182,9 +260,38 @@ export function openCount(state) {
   return state.tasks.filter(t => !t.done).length
 }
 
-// Placeholder until Task 5 gives the long break its queue-and-archive behaviour.
-function openLongBreak(state, _effects) {
-  return state
+// Entering a sanctioned window (long break or snooze) archives the task list
+// and drains the saved-links queue.
+function openLongBreak(state, effects) {
+  let next = state
+
+  if (next.tasks.length > 0) {
+    effects.push({
+      type: 'log',
+      event: 'tasks_archived',
+      data: {
+        tasks: next.tasks,
+        open: next.tasks.filter(t => !t.done).length,
+        done: next.tasks.filter(t => t.done).length,
+      },
+    })
+    next = { ...next, tasks: [] }
+  }
+
+  if (next.queue.length > 0) {
+    effects.push({ type: 'openUrls', urls: next.queue.map(q => q.url) })
+    effects.push({ type: 'log', event: 'queue_drained', data: { count: next.queue.length } })
+    next = { ...next, queue: [] }
+  }
+
+  return next
+}
+
+function normaliseSite(raw) {
+  let s = String(raw || '').trim().toLowerCase()
+  if (!s) return ''
+  s = s.replace(/^[a-z]+:\/\//, '').split('/')[0].split('?')[0].replace(/^www\./, '')
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(s) ? s : ''
 }
 
 const EXPIRING_PHASES = new Set([PHASE.WORK, PHASE.SHORT_BREAK, PHASE.LONG_BREAK])

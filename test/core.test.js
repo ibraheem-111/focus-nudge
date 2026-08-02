@@ -222,3 +222,112 @@ test('settle prunes graces once they lapse', () => {
   assert.equal(settle(s, T0 + 4 * MIN, CFG).state.graces['reddit.com'], T0 + 5 * MIN)
   assert.deepEqual(settle(s, T0 + 5 * MIN, CFG).state.graces, {}, 'lapses on the boundary')
 })
+
+test('tasks can be added, toggled, and removed', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'fix the auth redirect' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'write the regression test' }, T0, CFG).state
+  assert.deepEqual(s.tasks.map(t => t.text), ['fix the auth redirect', 'write the regression test'])
+  assert.deepEqual(s.tasks.map(t => t.id), [1, 2])
+  assert.equal(s.tasks.every(t => t.done === false), true)
+
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
+  assert.equal(s.tasks[0].done, true)
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
+  assert.equal(s.tasks[0].done, false, 'toggle is reversible')
+
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, CFG).state
+  assert.deepEqual(s.tasks.map(t => t.id), [2])
+})
+
+test('task ids keep climbing after a removal', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'b' }, T0, CFG).state
+  assert.equal(s.tasks[0].id, 2, 'ids are never reused')
+})
+
+test('blank tasks and unknown ids are ignored', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: '   ' }, T0, CFG).state
+  assert.deepEqual(s.tasks, [])
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 99 }, T0, CFG).state
+  assert.deepEqual(s.tasks, [])
+})
+
+test('task text is trimmed', () => {
+  const s = reduce(initialState(), { type: 'TASK_ADD', text: '  ship it  ' }, T0, CFG).state
+  assert.equal(s.tasks[0].text, 'ship it')
+})
+
+test('QUEUE_ADD saves a link and skips duplicates', () => {
+  let s = reduce(initialState(), { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
+  assert.deepEqual(s.queue, [{ url: 'https://reddit.com/r/x', title: 'x', savedAt: T0 }])
+  s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x again' }, T0 + MIN, CFG).state
+  assert.equal(s.queue.length, 1, 'the same url is not saved twice')
+})
+
+test('QUEUE_ADD requires a url', () => {
+  const s = reduce(initialState(), { type: 'QUEUE_ADD', url: '', title: 't' }, T0, CFG).state
+  assert.deepEqual(s.queue, [])
+})
+
+test('BREAK_LONG opens the queue and clears the task list', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'done thing' }, T0, CFG).state
+  s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
+
+  const { state, effects } = reduce(s, { type: 'BREAK_LONG' }, T0, CFG)
+  assert.equal(state.phase, PHASE.LONG_BREAK)
+  assert.equal(state.endsAt, T0 + 20 * MIN)
+  assert.deepEqual(state.tasks, [], 'the task list is cleared for the break')
+  assert.deepEqual(state.queue, [], 'the queue is drained')
+
+  const open = effects.find(e => e.type === 'openUrls')
+  assert.deepEqual(open.urls, ['https://reddit.com/r/x'])
+  assert.ok(effects.some(e => e.type === 'log' && e.event === 'tasks_archived'))
+})
+
+test('snoozing also drains the queue', () => {
+  let s = reduce(initialState(), { type: 'QUEUE_ADD', url: 'https://reddit.com/r/y', title: 'y' }, T0, CFG).state
+  const { state, effects } = reduce(s, { type: 'SNOOZE', hours: 2 }, T0, CFG)
+  assert.deepEqual(state.queue, [])
+  assert.deepEqual(effects.find(e => e.type === 'openUrls').urls, ['https://reddit.com/r/y'])
+})
+
+test('an empty queue produces no openUrls effect', () => {
+  const { effects } = reduce(initialState(), { type: 'BREAK_LONG' }, T0, CFG)
+  assert.equal(effects.some(e => e.type === 'openUrls'), false)
+})
+
+test('the automatic long break after four blocks also drains the queue', () => {
+  let s = reduce(initialState(), { type: 'QUEUE_ADD', url: 'https://reddit.com/r/z', title: 'z' }, T0, CFG).state
+  s = { ...s, blocksCompleted: 3, phase: PHASE.WORK, endsAt: T0 + MIN }
+  const { state, effects } = reduce(s, { type: 'ADVANCE' }, T0, CFG)
+  assert.equal(state.phase, PHASE.LONG_BREAK)
+  assert.deepEqual(state.queue, [])
+  assert.deepEqual(effects.find(e => e.type === 'openUrls').urls, ['https://reddit.com/r/z'])
+})
+
+test('QUEUE_DRAIN empties the queue without changing phase', () => {
+  let s = reduce(initialState(), { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
+  const { state, effects } = reduce(s, { type: 'QUEUE_DRAIN' }, T0, CFG)
+  assert.deepEqual(state.queue, [])
+  assert.equal(state.phase, PHASE.IDLE)
+  assert.deepEqual(effects.find(e => e.type === 'openUrls').urls, ['https://reddit.com/r/x'])
+})
+
+test('sites can be added and removed, and emit a setSites effect', () => {
+  const added = reduce(initialState(), { type: 'SITE_ADD', site: 'News.YCombinator.com' }, T0, CFG)
+  assert.deepEqual(added.effects.find(e => e.type === 'setSites').sites,
+    ['reddit.com', 'youtube.com', 'news.ycombinator.com'], 'lowercased and appended')
+
+  const dupe = reduce(initialState(), { type: 'SITE_ADD', site: 'reddit.com' }, T0, CFG)
+  assert.deepEqual(dupe.effects.find(e => e.type === 'setSites').sites, ['reddit.com', 'youtube.com'])
+
+  const removed = reduce(initialState(), { type: 'SITE_REMOVE', site: 'reddit.com' }, T0, CFG)
+  assert.deepEqual(removed.effects.find(e => e.type === 'setSites').sites, ['youtube.com'])
+})
+
+test('SITE_ADD strips a scheme and path if one is pasted in', () => {
+  const { effects } = reduce(initialState(), { type: 'SITE_ADD', site: 'https://news.ycombinator.com/best' }, T0, CFG)
+  assert.deepEqual(effects.find(e => e.type === 'setSites').sites,
+    ['reddit.com', 'youtube.com', 'news.ycombinator.com'])
+})
