@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { PHASE, initialState, reduce, settle } from '../daemon/core.js'
+import { PHASE, initialState, reduce, settle, view } from '../daemon/core.js'
 import { DEFAULTS } from '../daemon/config.js'
 
 const CFG = DEFAULTS
@@ -351,4 +351,59 @@ test('SITE_ADD strips a scheme and path if one is pasted in', () => {
   const { effects } = reduce(initialState(), { type: 'SITE_ADD', site: 'https://news.ycombinator.com/best' }, T0, CFG)
   assert.deepEqual(effects.find(e => e.type === 'setSites').sites,
     ['reddit.com', 'youtube.com', 'news.ycombinator.com'])
+})
+
+test('view reports a running block with positive remaining time', () => {
+  const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const v = view(s, T0 + 10 * MIN, CFG)
+  assert.equal(v.phase, PHASE.WORK)
+  assert.equal(v.remainingMs, 15 * MIN)
+  assert.equal(v.overrun, false)
+  assert.equal(v.nudgingPhase, true)
+  assert.equal(v.blocksPerCycle, 4)
+  assert.equal(v.countdownSeconds, 10)
+  assert.equal(v.graceMinutes, 5)
+  assert.deepEqual(v.sites, ['reddit.com', 'youtube.com'])
+  assert.equal(v.serverTime, T0 + 10 * MIN)
+})
+
+test('view reports an overrun as negative remaining time', () => {
+  const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const v = view(s, T0 + 30 * MIN, CFG)
+  assert.equal(v.remainingMs, -5 * MIN)
+  assert.equal(v.overrun, true)
+  assert.equal(v.phase, PHASE.WORK, 'still work, per the no-auto-advance rule')
+})
+
+test('view reports remaining time for a paused phase', () => {
+  let s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  s = reduce(s, { type: 'PAUSE' }, T0 + 10 * MIN, CFG).state
+  const v = view(s, T0 + 90 * MIN, CFG)
+  assert.equal(v.paused, true)
+  assert.equal(v.remainingMs, 15 * MIN, 'a paused clock does not run down')
+  assert.equal(v.overrun, false)
+})
+
+test('view reports null remaining while idle', () => {
+  const v = view(initialState(), T0, CFG)
+  assert.equal(v.remainingMs, null)
+  assert.equal(v.overrun, false)
+  assert.equal(v.nudgingPhase, true, 'idle still nudges')
+})
+
+test('view marks the sanctioned phases as not nudging', () => {
+  assert.equal(view({ ...initialState(), phase: PHASE.LONG_BREAK }, T0, CFG).nudgingPhase, false)
+  assert.equal(view({ ...initialState(), phase: PHASE.SNOOZED }, T0, CFG).nudgingPhase, false)
+  assert.equal(view({ ...initialState(), phase: PHASE.SHORT_BREAK }, T0, CFG).nudgingPhase, true)
+})
+
+test('view counts open tasks and queue depth', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'b' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/x', title: 'x' }, T0, CFG).state
+  const v = view(s, T0, CFG)
+  assert.equal(v.openTaskCount, 1)
+  assert.equal(v.tasks.length, 2)
+  assert.equal(v.queueDepth, 1)
 })

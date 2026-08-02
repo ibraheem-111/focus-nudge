@@ -260,6 +260,34 @@ export function openCount(state) {
   return state.tasks.filter(t => !t.done).length
 }
 
+export const NUDGING_PHASES = new Set([PHASE.IDLE, PHASE.WORK, PHASE.SHORT_BREAK])
+
+export function view(state, now, config) {
+  let remainingMs = null
+  if (state.paused && state.pausedRemainingMs !== null) remainingMs = state.pausedRemainingMs
+  else if (state.endsAt !== null) remainingMs = state.endsAt - now
+
+  return {
+    phase: state.phase,
+    endsAt: state.endsAt,
+    remainingMs,
+    overrun: remainingMs !== null && !state.paused && remainingMs < 0,
+    paused: state.paused,
+    blocksCompleted: state.blocksCompleted,
+    blocksPerCycle: config.blocksPerCycle,
+    tasks: state.tasks,
+    openTaskCount: openCount(state),
+    queue: state.queue,
+    queueDepth: state.queue.length,
+    sites: config.sites,
+    graces: state.graces,
+    countdownSeconds: config.countdownSeconds,
+    graceMinutes: config.graceMinutes,
+    nudgingPhase: NUDGING_PHASES.has(state.phase),
+    serverTime: now,
+  }
+}
+
 // Entering a sanctioned window (long break or snooze) archives the task list
 // and drains the saved-links queue.
 function openLongBreak(state, effects) {
