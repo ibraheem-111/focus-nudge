@@ -685,6 +685,22 @@ test('settle is a no-op while idle', () => {
   assert.deepEqual(state, s)
   assert.deepEqual(effects, [])
 })
+
+// Pins a semantic the Task 2 review surfaced as undocumented: START means
+// "resume if paused, otherwise begin a work block". Mid-break that is the
+// useful "done resting" action; mid-work it restarts the block, discarding
+// progress. That is a deliberate choice, not an accident — this test exists so
+// it cannot change silently.
+test('START restarts an active work block and ends a break early', () => {
+  const running = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const restarted = reduce(running, { type: 'START' }, T0 + 10 * MIN, CFG).state
+  assert.equal(restarted.phase, PHASE.WORK)
+  assert.equal(restarted.endsAt, T0 + 10 * MIN + 25 * MIN, 'a fresh 25 minutes, not the old endsAt')
+
+  const onBreak = { ...initialState(), phase: PHASE.SHORT_BREAK, endsAt: T0 + 5 * MIN }
+  const fromBreak = reduce(onBreak, { type: 'START' }, T0, CFG).state
+  assert.equal(fromBreak.phase, PHASE.WORK, 'START ends a break early rather than being ignored')
+})
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -762,7 +778,7 @@ export function settle(state, now, config) {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 18 tests
+Expected: PASS, 19 tests
 
 - [ ] **Step 6: Commit**
 
@@ -841,7 +857,7 @@ Expected: FAIL — `GRACE` hits the default case, `state.graces` stays `{}`
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 23 tests
+Expected: PASS, 24 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1111,7 +1127,7 @@ function normaliseSite(raw) {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 36 tests
+Expected: PASS, 37 tests
 
 - [ ] **Step 6: Commit**
 
@@ -1242,7 +1258,7 @@ export function view(state, now, config) {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 42 tests
+Expected: PASS, 43 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1438,7 +1454,7 @@ Expected: PASS, 16 tests
 - [ ] **Step 5: Run the whole suite**
 
 Run: `npm test`
-Expected: PASS, 68 tests across three files (config 10, core 42, policy 16)
+Expected: PASS, 69 tests across three files (config 10, core 43, policy 16)
 
 - [ ] **Step 6: Commit**
 
@@ -1972,7 +1988,7 @@ Expected: PASS, 17 tests
 - [ ] **Step 5: Run the whole suite and start the daemon by hand**
 
 Run: `npm test`
-Expected: PASS, 85 tests
+Expected: PASS, 86 tests
 
 Run: `node daemon/server.js &` then `curl -s localhost:7373/state | head -c 200` then `kill %1`
 Expected: JSON with `"phase":"IDLE"`
@@ -3412,8 +3428,8 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS, 90 tests across five files, zero failures
-(config 10, core 42, policy 16, server smoke 17, quotes 5)
+Expected: PASS, 91 tests across five files, zero failures
+(config 10, core 43, policy 16, server smoke 17, quotes 5)
 
 - [ ] **Step 2: Walk the whole loop and record the result**
 
