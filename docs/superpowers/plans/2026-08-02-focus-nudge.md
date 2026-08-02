@@ -1041,6 +1041,21 @@ test('SITE_ADD strips a scheme and path if one is pasted in', () => {
   assert.deepEqual(effects.find(e => e.type === 'setSites').sites,
     ['reddit.com', 'youtube.com', 'news.ycombinator.com'])
 })
+
+test('SITE_ADD canonicalises entries that would otherwise never match', () => {
+  const added = site => reduce(initialState(), { type: 'SITE_ADD', site }, T0, CFG)
+    .effects.find(e => e.type === 'setSites').sites.at(-1)
+
+  assert.equal(added('.reddit.com'), 'reddit.com', 'a leading dot is stripped, not stored')
+  assert.equal(added('news.ycombinator.com.'), 'news.ycombinator.com', 'a trailing dot too')
+  assert.equal(added('news.ycombinator.com:8080'), 'news.ycombinator.com', 'and a port')
+  assert.equal(added('user@news.ycombinator.com'), 'news.ycombinator.com', 'and userinfo')
+
+  // A bare TLD must never be storable — in the matcher it would otherwise
+  // match every domain in that TLD.
+  const bare = reduce(initialState(), { type: 'SITE_ADD', site: 'com' }, T0, CFG)
+  assert.deepEqual(bare.effects, [], 'rejected outright, no setSites effect')
+})
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1083,8 +1098,13 @@ function openLongBreak(state, effects) {
 function normaliseSite(raw) {
   let s = String(raw || '').trim().toLowerCase()
   if (!s) return ''
-  s = s.replace(/^[a-z]+:\/\//, '').split('/')[0].split('?')[0].replace(/^www\./, '')
-  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(s) ? s : ''
+  s = s.replace(/^[a-z]+:\/\//, '').split('/')[0].split('?')[0]
+  s = s.split('@').pop().split(':')[0]          // drop any userinfo and port
+  s = s.replace(/^www\./, '').replace(/^\.+/, '').replace(/\.+$/, '')
+  // Canonicalising here is what keeps a stored entry matchable. The old
+  // pattern accepted ".reddit.com", which matchSite could then never match —
+  // silently unwatching the very site the user had just added.
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(s) ? s : ''
 }
 ```
 
@@ -1173,7 +1193,7 @@ function normaliseSite(raw) {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 40 tests
+Expected: PASS, 41 tests
 
 - [ ] **Step 6: Commit**
 
@@ -1304,7 +1324,7 @@ export function view(state, now, config) {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/core.test.js`
-Expected: PASS, 46 tests
+Expected: PASS, 47 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1433,6 +1453,48 @@ test('a missing site list falls back to the built-in defaults', () => {
   assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: null, now: T0 }).action, 'nudge')
   assert.equal(decide({ url: 'https://example.com/', phase: 'WORK', graces: {}, sites: null, now: T0 }).action, 'allow')
 })
+
+// The site list is user-editable through the popup, the CLI, and by hand in
+// config.json, so a malformed entry must not silently disable protection.
+
+test('a leading-dot entry still protects its domain', () => {
+  // normaliseSite's regex accepts ".reddit.com", so this reaches the matcher
+  // from the real popup. Without stripping, host.endsWith("..reddit.com") is
+  // never true and the site the user just asked to nudge goes unwatched.
+  assert.equal(matchSite('https://reddit.com/', ['.reddit.com']), 'reddit.com')
+  assert.equal(matchSite('https://old.reddit.com/', ['.reddit.com']), 'reddit.com')
+  assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: ['.reddit.com'], now: T0 }).action, 'nudge')
+})
+
+test('a bare TLD entry matches nothing rather than everything', () => {
+  assert.equal(matchSite('https://google.com/', ['com']), null)
+  assert.equal(matchSite('https://reddit.com/', ['com']), null)
+  assert.equal(matchSite('https://anything.co.uk/', ['uk']), null)
+})
+
+test('blank and non-string entries are skipped, not coerced', () => {
+  assert.equal(matchSite('https://reddit.com/', ['', '   ']), null)
+  assert.equal(matchSite('https://null.com/', [null, undefined, 42, {}]), null)
+  assert.equal(matchSite('https://reddit.com/', [null, 'reddit.com']), 'reddit.com', 'a bad entry does not stop later good ones')
+})
+
+test('an explicitly empty site list watches nothing', () => {
+  // Distinct from a missing list: [] is the user clearing their sites, and the
+  // popup would otherwise show an empty list while Reddit still got nudged.
+  assert.equal(matchSite('https://reddit.com/', []), null)
+  assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: [], now: T0 }).action, 'allow')
+})
+
+test('a non-array site list falls back rather than watching nothing', () => {
+  // Malformed config is missing data, so stay closed.
+  for (const junk of ['reddit.com', 42, {}, true]) {
+    assert.equal(decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: junk, now: T0 }).action, 'nudge', `sites=${JSON.stringify(junk)}`)
+  }
+})
+
+test('a trailing-dot FQDN host still matches', () => {
+  assert.equal(matchSite('https://reddit.com./', ['reddit.com']), 'reddit.com')
+})
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1454,13 +1516,23 @@ export function matchSite(url, sites) {
   try {
     const parsed = new URL(String(url))
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
-    host = parsed.hostname.toLowerCase()
+    // A trailing dot is a legal FQDN form: reddit.com. is reddit.com.
+    host = parsed.hostname.toLowerCase().replace(/\.+$/, '')
   } catch {
     return null
   }
-  const list = Array.isArray(sites) && sites.length ? sites : FALLBACK_SITES
+
+  // A missing or malformed list means we have no data, so fall back and keep
+  // nudging — a dead daemon must not open Reddit. An explicitly *empty* list is
+  // different: it is the user saying "watch nothing", and it is honoured.
+  const list = Array.isArray(sites) ? sites : FALLBACK_SITES
+
   for (const raw of list) {
-    const site = String(raw).toLowerCase()
+    if (typeof raw !== 'string') continue
+    const site = raw.trim().toLowerCase().replace(/^\.+/, '').replace(/\.+$/, '')
+    // Requiring a dot stops a stray bare TLD like "com" — reachable by hand
+    // editing config.json — from matching every domain in it.
+    if (!site.includes('.')) continue
     if (host === site || host.endsWith('.' + site)) return site
   }
   return null
@@ -1495,12 +1567,12 @@ export function decide({ url, phase, graces, sites, now }) {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/policy.test.js`
-Expected: PASS, 16 tests
+Expected: PASS, 22 tests
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `npm test`
-Expected: PASS, 72 tests across three files (config 10, core 46, policy 16)
+Expected: PASS, 79 tests across three files (config 10, core 47, policy 22)
 
 - [ ] **Step 6: Commit**
 
@@ -2034,7 +2106,7 @@ Expected: PASS, 17 tests
 - [ ] **Step 5: Run the whole suite and start the daemon by hand**
 
 Run: `npm test`
-Expected: PASS, 89 tests
+Expected: PASS, 96 tests
 
 Run: `node daemon/server.js &` then `curl -s localhost:7373/state | head -c 200` then `kill %1`
 Expected: JSON with `"phase":"IDLE"`
@@ -3474,8 +3546,8 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS, 94 tests across five files, zero failures
-(config 10, core 46, policy 16, server smoke 17, quotes 5)
+Expected: PASS, 101 tests across five files, zero failures
+(config 10, core 47, policy 22, server smoke 17, quotes 5)
 
 - [ ] **Step 2: Walk the whole loop and record the result**
 
