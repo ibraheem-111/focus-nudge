@@ -31,17 +31,19 @@ export function mergeConfig(raw) {
   return out
 }
 
-export function loadConfig() {
+// The path is a parameter so tests can point at a scratch directory. Real
+// callers pass nothing and get ~/.config/focus-nudge/config.json.
+export function loadConfig(configPath = PATHS.config) {
   try {
-    return mergeConfig(JSON.parse(fs.readFileSync(PATHS.config, 'utf8')))
+    return mergeConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')))
   } catch {
     return { ...DEFAULTS }
   }
 }
 
-export function saveConfig(cfg) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true })
-  writeAtomic(PATHS.config, JSON.stringify(cfg, null, 2))
+export function saveConfig(cfg, configPath = PATHS.config) {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  writeAtomic(configPath, JSON.stringify(cfg, null, 2))
 }
 
 export function writeAtomic(file, text) {
