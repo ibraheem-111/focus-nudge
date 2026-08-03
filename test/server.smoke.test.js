@@ -186,8 +186,14 @@ test('an oversized body is rejected and the daemon survives it', async () => {
     status = 'connection destroyed'
   }
   assert.ok(status, `got ${status}`)
+  // Assert the daemon is still SERVING, not that it is in some particular
+  // phase. This runs against the shared server, whose phase depends on which
+  // tests ran before it — pinning a phase here tests fixture ordering, not the
+  // property under test.
   const after = await get('/state')
-  assert.equal(after.phase, 'IDLE', 'the daemon is still answering after the oversized request')
+  assert.ok(typeof after.phase === 'string' && after.phase.length > 0,
+    `still answering after the oversized request, got ${JSON.stringify(after)}`)
+  assert.equal(typeof after.serverTime, 'number', 'and returning a coherent view')
 })
 
 test('a missing notify binary does not kill the daemon', async () => {
