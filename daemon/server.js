@@ -2,7 +2,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { loadConfig, saveConfig, writeAtomic, PATHS, CONFIG_DIR, mergeConfig } from './config.js'
+import { loadConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
 import { initialState, reduce, settle, view } from './core.js'
 
 const TIMER_ACTIONS = {
@@ -67,12 +67,20 @@ export function createServer(opts = {}) {
     }
   }
 
+  // Tracks whether the last write reached disk. A full or read-only disk must
+  // not take the daemon down, but the client must not be told "saved" either —
+  // otherwise a restart silently loses the task list.
+  let persistOk = true
+
   function persist() {
     try {
       writeAtomic(paths.state, JSON.stringify(state, null, 2))
+      persistOk = true
     } catch (err) {
+      persistOk = false
       console.error('focus-nudge: could not write state:', err.message)
     }
+    return persistOk
   }
 
   function runEffects(effects) {
@@ -114,12 +122,12 @@ export function createServer(opts = {}) {
     state = result.state
     runEffects(result.effects)
     persist()
-    return view(state, now, config)
+    return { ...view(state, now, config), persisted: persistOk }
   }
 
   function currentView(now = Date.now()) {
     tick(now)
-    return view(state, now, config)
+    return { ...view(state, now, config), persisted: persistOk }
   }
 
   const server = http.createServer(async (req, res) => {
@@ -157,7 +165,11 @@ export function createServer(opts = {}) {
         if (route === '/stats') {
           let text = ''
           try { text = fs.readFileSync(paths.log, 'utf8') } catch {}
-          return send(200, { ...summariseLog(text), ...currentView() })
+          // Namespaced deliberately. `blocksCompleted` exists in BOTH the log
+          // summary (lifetime total) and the view (current-cycle counter), so
+          // spreading them into one flat object silently shadows whichever
+          // comes first — reporting ~0 blocks no matter the real history.
+          return send(200, { ...currentView(), totals: summariseLog(text) })
         }
         return send(404, { error: 'not found' })
       }
@@ -272,11 +284,11 @@ function readBody(req) {
   })
 }
 
-let notifyWarned = false
+const warnedCommands = new Set()
 function warnOnce(cmd, message) {
-  if (notifyWarned) return
+  if (warnedCommands.has(cmd)) return
+  warnedCommands.add(cmd)
   console.error(`focus-nudge: could not run ${cmd}: ${message}`)
-  notifyWarned = true
 }
 
 // `spawn` reports a missing executable asynchronously via an 'error' event on

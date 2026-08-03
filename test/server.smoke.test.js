@@ -154,11 +154,109 @@ test('GET /quotes returns an empty list when the file is missing', async () => {
   assert.deepEqual((await get('/quotes')).quotes, [])
 })
 
-test('GET /stats summarises the log', async () => {
+test('GET /stats summarises the log under a namespace', async () => {
   const s = await get('/stats')
-  assert.equal(typeof s.blocksCompleted, 'number')
-  assert.equal(typeof s.nudgesContinued, 'number')
-  assert.equal(typeof s.savedForLater, 'number')
+  assert.equal(typeof s.totals.blocksCompleted, 'number')
+  assert.equal(typeof s.totals.nudgesContinued, 'number')
+  assert.equal(typeof s.totals.savedForLater, 'number')
+  assert.equal(typeof s.phase, 'string', 'the current view is still there alongside')
+})
+
+test('the lifetime block total is not shadowed by the current-cycle counter', async () => {
+  // Both objects carry a `blocksCompleted`. Flattened together, one silently
+  // wins: 7 completed blocks in the log were reported as 0.
+  fs.appendFileSync(path.join(tmp, 'log.jsonl'),
+    Array.from({ length: 7 }, () => JSON.stringify({ at: 1, event: 'block_completed' })).join('\n') + '\n')
+  const s = await get('/stats')
+  assert.ok(s.totals.blocksCompleted >= 7, `lifetime total survived, got ${s.totals.blocksCompleted}`)
+  assert.notEqual(s.totals, s.blocksCompleted, 'the two live at different keys')
+})
+
+test('an oversized body is rejected and the daemon survives it', async () => {
+  // readBody must destroy the socket rather than buffer without limit.
+  let status = null
+  try {
+    const res = await fetch(base + '/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'x'.repeat(2_000_000),
+    })
+    status = res.status
+  } catch {
+    status = 'connection destroyed'
+  }
+  assert.ok(status, `got ${status}`)
+  const after = await get('/state')
+  assert.equal(after.phase, 'IDLE', 'the daemon is still answering after the oversized request')
+})
+
+test('a missing notify binary does not kill the daemon', async () => {
+  // spawn reports a missing binary through the child's async 'error' event, and
+  // an unhandled 'error' on a ChildProcess is fatal. This uses the DEFAULT
+  // notify path (no injected hook) with PATH emptied, so notify-send cannot be
+  // found — the exact situation on a machine without libnotify installed.
+  const realPath = process.env.PATH
+  process.env.PATH = path.join(tmp, 'no-binaries-here')
+  const solo = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath: path.join(tmp, 'notify-state.json'),
+    logPath: path.join(tmp, 'notify-log.jsonl'),
+    quotesPath: path.join(tmp, 'quotes.txt'),
+    configPath: path.join(tmp, 'notify-config.json'),
+    openUrls: () => {},
+    // notify deliberately omitted so desktopNotify/spawnDetached is exercised
+  })
+  try {
+    const p = await solo.listen(0)
+    const started = await (await fetch(`http://127.0.0.1:${p}/timer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start' }),
+    })).json()
+    assert.equal(started.phase, 'WORK')
+    await new Promise(r => setTimeout(r, 300))
+    const still = await (await fetch(`http://127.0.0.1:${p}/state`)).json()
+    assert.equal(still.phase, 'WORK', 'daemon still alive after the failed spawn')
+  } finally {
+    process.env.PATH = realPath
+    solo.close()
+  }
+})
+
+test('a write failure reports persisted:false instead of claiming success', async t => {
+  // A full or read-only disk must not take the daemon down, but the client must
+  // not be told "saved" either, or a restart silently loses the task list.
+  if (process.getuid && process.getuid() === 0) return t.skip('root ignores directory permissions')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-ro-'))
+  const solo = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath: path.join(dir, 'state.json'),
+    logPath: path.join(dir, 'log.jsonl'),
+    quotesPath: path.join(dir, 'quotes.txt'),
+    configPath: path.join(dir, 'config.json'),
+    notify: () => {},
+    openUrls: () => {},
+  })
+  try {
+    const p = await solo.listen(0)
+    const ok = await (await fetch(`http://127.0.0.1:${p}/tasks`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'add', text: 'before' }),
+    })).json()
+    assert.equal(ok.persisted, true, 'a healthy write reports true')
+
+    fs.chmodSync(dir, 0o500)
+    const failed = await (await fetch(`http://127.0.0.1:${p}/tasks`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'add', text: 'after' }),
+    })).json()
+    assert.equal(failed.persisted, false, 'an unwritable directory reports false')
+    assert.equal(failed.tasks.length, 2, 'the action still applied in memory')
+  } finally {
+    fs.chmodSync(dir, 0o700)
+    solo.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('a corrupt state file is replaced with defaults rather than crashing', async () => {
