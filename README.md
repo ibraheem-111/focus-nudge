@@ -8,6 +8,26 @@ micro-tasks are still open, then lets you through if you still want to go.
 
 See `docs/superpowers/specs/2026-08-02-focus-nudge-design.md` for the design.
 
+## Prerequisites
+
+This is **Linux-only, by construction** — the daemon ships as a `systemctl --user`
+unit, and there is no equivalent packaging for macOS or Windows. If you are on
+either, this repo will not work for you as-is.
+
+- **Linux with systemd user services.** The daemon runs under `systemctl --user`.
+  macOS and Windows are not supported.
+- **Node >= 22.** The daemon and CLI use `node:test`, global `fetch`, and
+  `AbortSignal.timeout`, none of which exist on older Node.
+- **Google Chrome.** The extension is Manifest V3 and Chrome-specific. Firefox
+  is not supported.
+- **`notify-send` (libnotify), optional.** Used for desktop notifications when
+  a block ends. If it is missing, the daemon just skips notifying — nothing
+  breaks.
+- **Zero npm dependencies.** Nothing to `npm install`; the whole tool is Node
+  built-ins.
+
+Run `focus doctor` after installing to check all of the above on your machine.
+
 ## Install
 
     ./install.sh
@@ -41,6 +61,7 @@ click "Load unpacked", and select the `extension/` directory.
 
     focus stats              blocks today, last 7 days, all time, and a daily history
     focus stats 30           show the last 30 days of history (default 14)
+    focus doctor             diagnose a machine where the daemon or unit isn't working
     focus --help             full usage text
 
 Phases never advance on their own: an expired block waits for you. Watched sites
