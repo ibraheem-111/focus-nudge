@@ -1,0 +1,32 @@
+<meta charset="utf-8">
+<title>focus</title>
+<link rel="stylesheet" href="style.css">
+<div class="wrap">
+  <div>
+    <span class="phase-chip" id="phase"></span>
+    <span class="clock" id="clock"></span>
+  </div>
+  <p class="empty" id="cycle"></p>
+
+  <hr>
+
+  <div class="tasks" id="tasks"></div>
+  <input type="text" id="new-task" placeholder="add a micro-task, then press Enter" autocomplete="off">
+
+  <div class="actions">
+    <button class="primary small" id="start">Start</button>
+    <button class="small" id="skip">Skip</button>
+    <button class="small" id="pause">Pause</button>
+    <button class="small" id="stop">Stop</button>
+    <button class="small" id="break">Long break</button>
+  </div>
+
+  <p id="queue-line" class="empty" hidden></p>
+  <p><button class="small" id="drain" hidden>Open saved links</button></p>
+
+  <p class="down" id="down" hidden>
+    The daemon is not running. Start it with
+    <code>systemctl --user start focus-nudge</code>.
+  </p>
+</div>
+<script type="module" src="newtab.js"></script>
