@@ -9,14 +9,14 @@ Type=simple
 ExecStart=__NODE__ __REPO__/daemon/server.js
 Restart=on-failure
 RestartSec=2
-# No Environment= lines for DISPLAY/WAYLAND_DISPLAY/DBUS_SESSION_BUS_ADDRESS:
-# the systemd --user manager already exports all three into every unit's
-# environment on this machine (verified empirically — see task-10-report.md).
-# notify-send needs DBUS_SESSION_BUS_ADDRESS, which is inherited; xdg-open
-# (used when the saved-links queue drains) needs DISPLAY/WAYLAND_DISPLAY,
-# also inherited. A hardcoded Environment=DISPLAY=:0 would be an X11-only
-# assumption on a Wayland session and adds nothing this unit doesn't already
-# have.
+# There are deliberately no Environment= lines here. The systemd --user manager
+# already exports DISPLAY, WAYLAND_DISPLAY and DBUS_SESSION_BUS_ADDRESS into every
+# unit it starts — verified by reading /proc/<MainPID>/environ of the running
+# daemon. notify-send needs DBUS_SESSION_BUS_ADDRESS; xdg-open, used when the
+# saved-links queue drains, needs DISPLAY or WAYLAND_DISPLAY. Both are inherited.
+#
+# A hardcoded Environment=DISPLAY=:0 would be an X11-only assumption, wrong on a
+# Wayland session, and adds nothing this unit does not already have.
 
 [Install]
 WantedBy=graphical-session.target
