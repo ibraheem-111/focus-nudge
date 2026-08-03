@@ -30,6 +30,7 @@ function render(view) {
     el('phase').textContent = 'no daemon'
     el('clock').textContent = ''
     el('pause').textContent = 'Pause'   // a stale "Resume" means nothing when down
+    el('site-error').hidden = true      // a stale error contradicts "no daemon"
     renderTasks(el('tasks'), [])
     el('queue-line').textContent = 'unknown'
     el('drain').hidden = true
@@ -89,29 +90,43 @@ el('new-task').addEventListener('keydown', async e => {
   render(await act(task('add', { text })))
 })
 
+function showSiteError(message) {
+  el('site-error').textContent = message
+  el('site-error').hidden = false
+}
+
 el('new-site').addEventListener('keydown', async e => {
   if (e.key !== 'Enter') return
+  // Clear stale feedback on every attempt, including an empty one — otherwise a
+  // previous error stays on screen contradicting whatever happens next.
+  el('site-error').hidden = true
   const domain = e.target.value.trim()
   if (!domain) return
 
+  // Read the authoritative list BEFORE mutating. `latest` can still be null if
+  // the first poll has not resolved yet, and a zero baseline would make a
+  // rejected add look like a success.
+  const baseline = await act(getState())
+  if (!baseline) {
+    showSiteError('the daemon is not running, so the site list cannot be changed')
+    return
+  }
+  const countBefore = (baseline.sites ?? []).length
+
   // The daemon canonicalises entries and rejects anything without a dot — a bare
   // TLD like "com" would otherwise match every domain in it. A rejection returns
-  // the state unchanged, which is indistinguishable from success unless we look.
-  // Without this the input would just clear and nothing would happen.
-  const countBefore = (latest?.sites ?? []).length
+  // the state unchanged with a 200, indistinguishable from success unless we
+  // compare. Without this the input would just clear and nothing would happen.
   const v = await act(site('add', domain))
   render(v)
 
-  const added = v && (v.sites ?? []).length > countBefore
-  if (added) {
+  if (!v) {
+    showSiteError('the daemon is not running, so the site list cannot be changed')
+  } else if ((v.sites ?? []).length > countBefore) {
     e.target.value = ''
-    el('site-error').hidden = true
   } else {
     // Keep what they typed so it can be corrected rather than retyped.
-    el('site-error').textContent = v
-      ? `"${domain}" was not added — check it is a full domain, or it may already be listed`
-      : 'the daemon is not running, so the site list cannot be changed'
-    el('site-error').hidden = false
+    showSiteError(`"${domain}" was not added — check it is a full domain, or it may already be listed`)
   }
 })
 
