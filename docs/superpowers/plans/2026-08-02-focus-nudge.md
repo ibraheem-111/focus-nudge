@@ -928,11 +928,49 @@ test('tasks can be added, toggled, and removed', () => {
   assert.deepEqual(s.tasks.map(t => t.id), [2])
 })
 
-test('task ids keep climbing after a removal', () => {
+test('ids climb while tasks remain, and restart once the list empties', () => {
+  // Deliberate change of intent. Ids used to climb forever, so after a long day
+  // you were typing "task done 47". They only need to be unique among LIVE
+  // tasks, so an empty list is a safe place to restart.
   let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
-  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, CFG).state
   s = reduce(s, { type: 'TASK_ADD', text: 'b' }, T0, CFG).state
-  assert.equal(s.tasks[0].id, 2, 'ids are never reused')
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'c' }, T0, CFG).state
+  assert.deepEqual(s.tasks.map(t => t.id), [2, 3], 'no reuse while another task is live')
+
+  s = reduce(s, { type: 'TASK_REMOVE', id: 2 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_REMOVE', id: 3 }, T0, CFG).state
+  assert.equal(s.nextTaskId, 1, 'emptying the list restarts the numbering')
+  s = reduce(s, { type: 'TASK_ADD', text: 'fresh' }, T0, CFG).state
+  assert.equal(s.tasks[0].id, 1)
+})
+
+test('TASK_CLEAR_DONE removes only the ticked-off tasks', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'keep me' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'done one' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'done two' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 2 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 3 }, T0, CFG).state
+
+  const { state, effects } = reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, CFG)
+  assert.deepEqual(state.tasks.map(t => t.text), ['keep me'])
+  assert.equal(state.nextTaskId, 4, 'ids do not restart while a task survives')
+  assert.equal(effects.find(e => e.event === 'tasks_cleared_done').data.count, 2)
+})
+
+test('TASK_CLEAR_DONE is a no-op when nothing is done', () => {
+  const s = reduce(initialState(), { type: 'TASK_ADD', text: 'open' }, T0, CFG).state
+  const { state, effects } = reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, CFG)
+  assert.deepEqual(state, s, 'same state, not a rebuilt copy')
+  assert.deepEqual(effects, [])
+})
+
+test('clearing every done task also restarts the numbering', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, CFG).state
+  assert.deepEqual(s.tasks, [])
+  assert.equal(s.nextTaskId, 1)
 })
 
 test('blank tasks and unknown ids are ignored', () => {
@@ -960,7 +998,7 @@ test('TASK_CLEAR empties the list silently and touches nothing else', () => {
   const { state, effects } = reduce(s, { type: 'TASK_CLEAR' }, T0, CFG)
   assert.deepEqual(state.tasks, [])
   assert.deepEqual(effects, [], 'an explicit clear is silent — no archive, no log')
-  assert.equal(state.nextTaskId, 3, 'ids do not rewind, so a cleared id is never reused')
+  assert.equal(state.nextTaskId, 1, 'an emptied list restarts the numbering')
   assert.equal(state.queue.length, 1, 'the saved-links queue is untouched')
   assert.equal(state.phase, PHASE.WORK, 'the running block is untouched')
 
@@ -1088,7 +1126,7 @@ function openLongBreak(state, effects) {
         done: next.tasks.filter(t => t.done).length,
       },
     })
-    next = { ...next, tasks: [] }
+    next = withTasks(next, [])
   }
 
   if (next.queue.length > 0) {
@@ -1098,6 +1136,13 @@ function openLongBreak(state, effects) {
   }
 
   return next
+}
+
+// Ids only need to be unique among LIVE tasks. Once the list empties there is
+// nothing left to confuse, and short ids are far friendlier to type than "done 47"
+// after a long day. Every path that can empty the list goes through here.
+function withTasks(state, tasks) {
+  return { ...state, tasks, nextTaskId: tasks.length === 0 ? 1 : state.nextTaskId }
 }
 
 function normaliseSite(raw) {
@@ -1153,11 +1198,22 @@ function normaliseSite(raw) {
 
     case 'TASK_REMOVE': {
       if (!state.tasks.some(t => t.id === action.id)) return { state, effects }
-      return { state: { ...state, tasks: state.tasks.filter(t => t.id !== action.id) }, effects }
+      return { state: withTasks(state, state.tasks.filter(t => t.id !== action.id)), effects }
     }
 
     case 'TASK_CLEAR':
-      return { state: { ...state, tasks: [] }, effects }
+      return { state: withTasks(state, []), effects }
+
+    case 'TASK_CLEAR_DONE': {
+      const open = state.tasks.filter(t => !t.done)
+      if (open.length === state.tasks.length) return { state, effects }
+      effects.push({
+        type: 'log',
+        event: 'tasks_cleared_done',
+        data: { count: state.tasks.length - open.length },
+      })
+      return { state: withTasks(state, open), effects }
+    }
 
     case 'QUEUE_ADD': {
       const url = String(action.url || '').trim()
@@ -2118,7 +2174,7 @@ export function createServer(opts = {}) {
           case '/snooze':
             return send(200, dispatch({ type: 'SNOOZE', hours: body.hours }))
           case '/tasks': {
-            const map = { add: 'TASK_ADD', toggle: 'TASK_TOGGLE', remove: 'TASK_REMOVE', clear: 'TASK_CLEAR' }
+            const map = { add: 'TASK_ADD', toggle: 'TASK_TOGGLE', remove: 'TASK_REMOVE', clear: 'TASK_CLEAR', clearDone: 'TASK_CLEAR_DONE' }
             const type = map[body.action]
             if (!type) return send(400, { error: 'unknown task action' })
             return send(200, dispatch({ type, text: body.text, id: body.id }))
@@ -2387,7 +2443,8 @@ usage: focus [command]
   task <text>            add a micro-task
   task done <id>         tick one off (also: task toggle <id>)
   task rm <id>           remove one
-  task clear             empty the list
+  task clear             empty the list (ids restart at 1 once it is empty)
+  task clear done        remove only the ticked-off tasks
 
   sites                  list the watched domains
   sites add <domain>     watch another domain
@@ -2452,7 +2509,9 @@ switch (cmd) {
     } else if (sub === 'rm' || sub === 'remove') {
       printStatus(await call('POST', '/tasks', { action: 'remove', id: Number(words[0]) }))
     } else if (sub === 'clear') {
-      printStatus(await call('POST', '/tasks', { action: 'clear' }))
+      // `task clear` empties everything; `task clear done` keeps what is open.
+      const action = words[0] === 'done' ? 'clearDone' : 'clear'
+      printStatus(await call('POST', '/tasks', { action }))
     } else {
       printStatus(await call('POST', '/tasks', { action: 'add', text: [sub, ...words].join(' ') }))
     }
@@ -3606,6 +3665,7 @@ git commit -m "feat: add the pause screen"
 
   <div class="tasks" id="tasks"></div>
   <input type="text" id="new-task" placeholder="add a micro-task, then press Enter" autocomplete="off">
+  <p><button class="small" id="clear-done" hidden>Clear done</button></p>
 
   <div class="actions">
     <button class="primary small" id="start">Start</button>
@@ -3644,6 +3704,7 @@ function render(view, down) {
     el('clock').textContent = ''
     el('cycle').textContent = ''
     renderTasks(el('tasks'), [])
+    el('clear-done').hidden = true
     el('queue-line').hidden = true
     el('drain').hidden = true
     return
@@ -3665,6 +3726,7 @@ function render(view, down) {
   })
 
   el('pause').textContent = view.paused ? 'Resume' : 'Pause'
+  el('clear-done').hidden = !view.tasks.some(t => t.done)
 
   const depth = view.queueDepth
   el('queue-line').hidden = depth === 0
@@ -3693,6 +3755,9 @@ input.addEventListener('keydown', async e => {
   render(await refreshWith(task('add', { text })), false)
 })
 
+el('clear-done').addEventListener('click', async () => {
+  render(await refreshWith(task('clearDone')), false)
+})
 el('start').addEventListener('click', async () => {
   render(await refreshWith(timer('start')), false)
 })
@@ -3782,6 +3847,7 @@ git commit -m "feat: add new tab dashboard"
   <h2>Micro-tasks</h2>
   <div class="tasks" id="tasks"></div>
   <input type="text" id="new-task" placeholder="add a micro-task" autocomplete="off">
+  <p><button class="small" id="clear-done" hidden>Clear done</button></p>
 
   <h2>Saved for later</h2>
   <p class="empty" id="queue-line"></p>
@@ -3845,6 +3911,7 @@ function render(view) {
     el('queue-line').textContent = 'unknown'
     el('drain').hidden = true
     el('pause').textContent = 'Pause'   // a stale "Resume" means nothing when down
+    el('clear-done').hidden = true
     el('site-error').hidden = true      // a stale error contradicts "no daemon"
     renderSites([])
     return
@@ -3855,6 +3922,7 @@ function render(view) {
   el('clock').textContent = clockLine(view)
   el('clock').classList.toggle('overrun', Boolean(view.overrun))
   el('pause').textContent = view.paused ? 'Resume' : 'Pause'
+  el('clear-done').hidden = !view.tasks.some(t => t.done)
 
   renderTasks(el('tasks'), view.tasks, {
     onToggle: async id => render(await act(task('toggle', { id }))),
@@ -3874,6 +3942,7 @@ async function act(promise) {
   return isDown(v) ? null : v
 }
 
+el('clear-done').addEventListener('click', async () => render(await act(task('clearDone'))))
 el('start').addEventListener('click', async () => render(await act(timer('start'))))
 el('skip').addEventListener('click', async () => render(await act(timer('skip'))))
 el('pause').addEventListener('click', async () =>
