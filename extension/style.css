@@ -1,0 +1,64 @@
+:root {
+  --bg: #12100e;
+  --panel: #1b1815;
+  --ink: #ece6dd;
+  --muted: #948b7f;
+  --line: #2e2823;
+  --accent: #d98f4a;
+  --ok: #7fa86b;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Inter", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 34rem; margin: 0 auto; padding: 2rem 1.5rem; }
+
+.quote { font-size: 1.4rem; line-height: 1.5; font-weight: 400; margin: 0 0 0.75rem; }
+.quote-author { color: var(--muted); font-size: 0.95rem; margin: 0 0 2rem; }
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 1.5rem 0; }
+
+.clock { font-variant-numeric: tabular-nums; font-size: 1.1rem; }
+.clock.overrun { color: var(--accent); }
+.phase-chip {
+  float: right; font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.15rem 0.6rem;
+}
+
+.tasks { display: flex; flex-direction: column; gap: 0.4rem; margin: 1rem 0; }
+.task { display: flex; align-items: center; gap: 0.6rem; cursor: pointer; }
+.task.done span { color: var(--muted); text-decoration: line-through; }
+.task-remove {
+  margin-left: auto; background: none; border: 0; color: var(--muted);
+  cursor: pointer; font-size: 1rem; line-height: 1;
+}
+.empty { color: var(--muted); font-style: italic; margin: 0.5rem 0; }
+
+input[type="text"] {
+  width: 100%; background: var(--panel); border: 1px solid var(--line);
+  color: var(--ink); border-radius: 6px; padding: 0.55rem 0.7rem; font: inherit;
+}
+input[type="text"]::placeholder { color: var(--muted); }
+
+.actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1.5rem; }
+
+button {
+  font: inherit; cursor: pointer; border-radius: 6px; padding: 0.6rem 1.1rem;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #17120d; font-weight: 600; }
+button.ghost { background: none; border: 0; color: var(--muted); padding: 0.4rem 0; font-size: 0.9rem; }
+button.ghost:disabled { color: #5b544c; cursor: not-allowed; }
+button.small { padding: 0.35rem 0.7rem; font-size: 0.85rem; }
+
+.center { text-align: center; }
+.down { color: var(--accent); font-size: 0.85rem; margin-top: 1rem; }
+.down code { background: var(--panel); padding: 0.1rem 0.35rem; border-radius: 4px; }

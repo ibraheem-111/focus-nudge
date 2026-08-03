@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "focus-nudge",
+  "version": "0.1.0",
+  "description": "A pause, a quote, and your unfinished tasks before you open a distraction.",
+  "permissions": ["storage", "tabs", "webNavigation", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "sw.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "focus-nudge" },
+  "chrome_url_overrides": { "newtab": "newtab.html" }
+}
