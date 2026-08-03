@@ -9,6 +9,7 @@ CONFIG_DIR="$HOME/.config/focus-nudge"
 
 if [ -z "$NODE" ]; then
   echo "install: node is not on PATH" >&2
+  echo "  this tool needs Node >= 22: https://nodejs.org/" >&2
   exit 1
 fi
 
@@ -18,6 +19,45 @@ fi
 if [ ! -f "$REPO/cli/focus" ]; then
   echo "install: $REPO/cli/focus is missing — nothing to link" >&2
   exit 1
+fi
+
+# A missing systemd user session is the single most likely failure on a
+# stranger's machine (a bare SSH box, a container, WSL without systemd
+# enabled, ...), and without this check the script would get most of the way
+# through — config dir, quotes, symlink — before failing on the unit itself.
+if ! systemctl --user show-environment >/dev/null 2>&1; then
+  echo "install: 'systemctl --user' does not work on this machine" >&2
+  echo "  this tool needs Linux with a systemd user session (not macOS, not Windows," >&2
+  echo "  and not every container/WSL setup). See: systemctl --user status" >&2
+  exit 1
+fi
+
+# Node existing is not enough: an old Node installs cleanly and then fails at
+# runtime on node:test, global fetch, or AbortSignal.timeout in ways that look
+# like bugs in this tool rather than an unmet prerequisite.
+NODE_MAJOR="$("$NODE" -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || true)"
+case "$NODE_MAJOR" in
+  ''|*[!0-9]*)
+    echo "install: could not determine node's version (node --version reports: $("$NODE" --version 2>&1))" >&2
+    exit 1
+    ;;
+esac
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  echo "install: node is too old ($("$NODE" --version), need >= 22)" >&2
+  echo "  upgrade Node: https://nodejs.org/" >&2
+  exit 1
+fi
+
+# Chrome/Chromium and notify-send are warnings, not hard failures: someone may
+# install Chrome afterwards, and the daemon already degrades gracefully with
+# no notify-send.
+if ! command -v google-chrome >/dev/null 2>&1 \
+  && ! command -v google-chrome-stable >/dev/null 2>&1 \
+  && ! command -v chromium >/dev/null 2>&1; then
+  echo "warning: no Chrome/Chromium found on PATH — the extension needs Google Chrome" >&2
+fi
+if ! command -v notify-send >/dev/null 2>&1; then
+  echo "warning: notify-send not found — desktop notifications will be silently skipped" >&2
 fi
 
 echo "==> creating $CONFIG_DIR"
