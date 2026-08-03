@@ -1,0 +1,35 @@
+<meta charset="utf-8">
+<title>focus</title>
+<link rel="stylesheet" href="style.css">
+<div class="wrap">
+  <p class="quote" id="quote"></p>
+  <p class="quote-author" id="author"></p>
+
+  <hr>
+
+  <div>
+    <span class="phase-chip" id="phase"></span>
+    <span class="clock" id="clock"></span>
+  </div>
+
+  <div class="tasks" id="tasks"></div>
+
+  <p class="empty" id="target"></p>
+
+  <hr>
+
+  <div class="actions">
+    <button class="primary" id="back">Back to work</button>
+    <button id="save">Save for later</button>
+  </div>
+
+  <p class="center" style="margin-top:1.5rem">
+    <button class="ghost" id="continue" disabled></button>
+  </p>
+
+  <p class="down" id="down" hidden>
+    The daemon is not running, so this is a plain reminder.
+    Start it with <code>systemctl --user start focus-nudge</code>.
+  </p>
+</div>
+<script type="module" src="interstitial.js"></script>
