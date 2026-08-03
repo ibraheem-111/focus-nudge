@@ -1,0 +1,49 @@
+<meta charset="utf-8">
+<title>focus-nudge</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body { width: 20rem; }
+  .wrap { padding: 1rem; max-width: none; }
+  h2 { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase;
+       color: var(--muted); margin: 1.25rem 0 0.5rem; font-weight: 500; }
+  .site-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; padding: 0.15rem 0; }
+  .site-row button { margin-left: auto; }
+</style>
+<div class="wrap">
+  <div>
+    <span class="phase-chip" id="phase"></span>
+    <span class="clock" id="clock"></span>
+  </div>
+
+  <div class="actions">
+    <button class="primary small" id="start">Start</button>
+    <button class="small" id="skip">Skip</button>
+    <button class="small" id="pause">Pause</button>
+    <button class="small" id="break">Long break</button>
+  </div>
+
+  <h2>Micro-tasks</h2>
+  <div class="tasks" id="tasks"></div>
+  <input type="text" id="new-task" placeholder="add a micro-task" autocomplete="off">
+
+  <h2>Saved for later</h2>
+  <p class="empty" id="queue-line"></p>
+  <button class="small" id="drain" hidden>Open them now</button>
+
+  <h2>Turn nudging off for</h2>
+  <div class="actions">
+    <button class="small" data-hours="1">1 hour</button>
+    <button class="small" data-hours="2">2 hours</button>
+    <button class="small" data-hours="4">4 hours</button>
+  </div>
+
+  <h2>Watched sites</h2>
+  <div id="sites"></div>
+  <input type="text" id="new-site" placeholder="add a domain" autocomplete="off">
+
+  <p class="down" id="down" hidden>
+    The daemon is not running. Nudging still applies.
+    Start it with <code>systemctl --user start focus-nudge</code>.
+  </p>
+</div>
+<script type="module" src="popup.js"></script>
