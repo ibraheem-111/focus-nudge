@@ -2,9 +2,9 @@
 
 A pause, a quote, and your unfinished tasks — before you open a distraction.
 
-Reddit and YouTube are not blocked. They are interrupted by a screen that shows
-how long is left in your current pomodoro block and which micro-tasks are still
-open, then lets you through if you still want to go.
+Reddit, YouTube, X and Instagram are not blocked. They are interrupted by a
+screen that shows how long is left in your current pomodoro block and which
+micro-tasks are still open, then lets you through if you still want to go.
 
 See `docs/superpowers/specs/2026-08-02-focus-nudge-design.md` for the design.
 
@@ -43,8 +43,8 @@ click "Load unpacked", and select the `extension/` directory.
     focus stats 30           show the last 30 days of history (default 14)
     focus --help             full usage text
 
-Phases never advance on their own: an expired block waits for you. Reddit and
-YouTube are nudged during work AND short breaks — a long break or an explicit
+Phases never advance on their own: an expired block waits for you. Watched sites
+are nudged during work AND short breaks — a long break or an explicit
 `focus off` are the only windows where they open freely.
 
 ## How it fits together
@@ -61,7 +61,10 @@ YouTube are nudged during work AND short breaks — a long break or an explicit
 - `daemon/server.js` — the only component that performs I/O: HTTP on
   127.0.0.1:7373, atomic persistence, `notify-send`, and the append-only log.
 - `extension/policy.js` — the pure allow-or-nudge decision.
-- `extension/sw.js` — polls the daemon and intercepts navigation.
+- `extension/sw.js` — polls the daemon and intercepts navigation, both full page
+  loads (`onBeforeNavigate`) and in-app navigation (`onHistoryStateUpdated`).
+  Every watched site is a single-page app, so without the second one a grace
+  could lapse without the pause screen ever returning.
 - `extension/interstitial.*` — the pause screen: quote, live countdown, tasks,
   and the three buttons (`continue anyway`, `back to work`, `save for later`).
 - `cli/focus`, `extension/popup.*`, `extension/dashboard.*` — thin clients. They
@@ -73,7 +76,18 @@ YouTube are nudged during work AND short breaks — a long break or an explicit
   error. See the comment in the file for the full story.
 
 If the daemon is unreachable the extension keeps nudging with its bundled quotes.
-Failing closed means a crashed daemon can never quietly hand over Reddit.
+Failing closed means a crashed daemon can never quietly hand over Reddit. It also
+must not trap you: with no daemon to record a grace, `continue anyway` writes a
+pass into the extension's own session storage instead, so the escape hatch still
+works. That pass is honoured only while the daemon stays unreachable, and it dies
+with the browser — a dead daemon can neither block you permanently nor grant
+standing access.
+
+Only the extension may drive the daemon from a browser: any request carrying an
+`Origin` that is not a `chrome-extension:` URL is refused with a 403. Requests
+with no `Origin` at all — `curl`, the CLI, your own scripts — are served, since a
+web page cannot suppress its own `Origin`. Without this, any page you visited
+(reddit.com included) could `POST /snooze` and switch the nudging off.
 
 ## Known limitations
 
