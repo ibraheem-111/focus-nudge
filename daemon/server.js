@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { loadConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
-import { initialState, reduce, settle, view } from './core.js'
+import { initialState, reduce, settle, view, PHASE } from './core.js'
 
 const TIMER_ACTIONS = {
   start: 'START',
@@ -64,6 +64,49 @@ export function summariseLog(text, { dayKey = localDay, now = Date.now() } = {})
   return stats
 }
 
+// The fields core.js iterates, indexes or spreads without checking first,
+// because it is pure and trusts its caller to hand it a real state. Returns a
+// reason string when the loaded object cannot safely be used, or null when it
+// can. Deliberately narrow: rejecting good state would lose the task list on
+// every restart, which is worse than the bug it guards.
+const KNOWN_PHASES = new Set(Object.values(PHASE))
+
+function shapeProblem(parsed) {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return 'not a json object'
+  }
+  if (parsed.tasks !== undefined && !Array.isArray(parsed.tasks)) return 'tasks is not an array'
+  if (parsed.queue !== undefined && !Array.isArray(parsed.queue)) return 'queue is not an array'
+  if (parsed.graces !== undefined &&
+      (parsed.graces === null || typeof parsed.graces !== 'object' || Array.isArray(parsed.graces))) {
+    return 'graces is not an object'
+  }
+  if (parsed.phase !== undefined && !KNOWN_PHASES.has(parsed.phase)) {
+    return `unknown phase ${JSON.stringify(parsed.phase)}`
+  }
+  return null
+}
+
+// Only the extension may drive the daemon from a browser. Any page the user
+// visits can reach 127.0.0.1, and every mutating route was wide open: reddit.com
+// itself could POST /snooze to switch nudging off, POST /grace to buy a pass, or
+// POST /sites {remove} to unwatch itself. A tool that exists to be hard to
+// switch off cannot leave that open.
+//
+// An ABSENT Origin is allowed: curl, the CLI and any other local script send
+// none, and they are not the threat — a page cannot suppress its own Origin.
+// Everything else must be a chrome-extension: URL. The id is not checked because
+// it differs per install; anything that can forge an extension origin already has
+// more privilege than this guard could withhold.
+export function originAllowed(origin) {
+  if (origin === undefined) return true
+  try {
+    return new URL(origin).protocol === 'chrome-extension:'
+  } catch {
+    return false   // 'null', '', or junk: fail closed
+  }
+}
+
 export function createServer(opts = {}) {
   const paths = {
     state: opts.statePath ?? PATHS.state,
@@ -79,16 +122,36 @@ export function createServer(opts = {}) {
   let state = readState(paths.state)
 
   function readState(file) {
+    let raw
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
-      return { ...initialState(), ...parsed }
+      raw = fs.readFileSync(file, 'utf8')
     } catch (err) {
-      if (err.code !== 'ENOENT') {
-        try { fs.renameSync(file, file + '.corrupt') } catch {}
-        console.error(`focus-nudge: unreadable state file, starting fresh (kept at ${file}.corrupt)`)
-      }
-      return initialState()
+      if (err.code === 'ENOENT') return initialState()   // normal first run
+      return quarantine(file, err.message)
     }
+
+    let parsed
+    try {
+      parsed = JSON.parse(raw)
+    } catch (err) {
+      return quarantine(file, err.message)
+    }
+
+    // Parsing is not enough. Valid JSON with the wrong TYPES survived the merge
+    // below and then threw inside settle/view on every request, so the daemon
+    // answered 500 forever. It never exits, so systemd's Restart=on-failure
+    // cannot rescue it, and nothing was quarantined to point the user at. Hand
+    // editing, a half-written file, or a future schema change all reach here.
+    const problem = shapeProblem(parsed)
+    if (problem) return quarantine(file, problem)
+
+    return { ...initialState(), ...parsed }
+  }
+
+  function quarantine(file, why) {
+    try { fs.renameSync(file, file + '.corrupt') } catch {}
+    console.error(`focus-nudge: unusable state file (${why}), starting fresh (kept at ${file}.corrupt)`)
+    return initialState()
   }
 
   // Tracks whether the last write reached disk. A full or read-only disk must
@@ -164,6 +227,13 @@ export function createServer(opts = {}) {
         'cache-control': 'no-store',
       })
       res.end(JSON.stringify(body))
+    }
+
+    // Before any routing, and before the body is read: a page that is not
+    // allowed to act gets no chance to. Applies to GET too — /state and /stats
+    // are the user's own activity history.
+    if (!originAllowed(req.headers.origin)) {
+      return send(403, { error: 'only the focus-nudge extension may call this daemon from a browser' })
     }
 
     if (req.method === 'OPTIONS') {

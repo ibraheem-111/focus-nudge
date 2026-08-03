@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createServer, summariseLog, localDay } from '../daemon/server.js'
+import { createServer, summariseLog, localDay, originAllowed } from '../daemon/server.js'
 import { DEFAULTS } from '../daemon/config.js'
 
 let base
@@ -344,6 +344,217 @@ test('a corrupt state file is replaced with defaults rather than crashing', asyn
     openUrls: () => {},
   })
   base = `http://127.0.0.1:${await handle.listen(0)}`
+})
+
+// Quarantining only on JSON.parse failure was not enough. Valid JSON with the
+// wrong TYPES survived the merge into initialState and then threw inside
+// settle/view on every single request, so the daemon answered
+// 500 {"error":"internal error"} forever. The process does not exit, so
+// Restart=on-failure never fires and no .corrupt file was ever written — the
+// daemon was bricked with nothing to point at.
+test('a shape-invalid state file is quarantined rather than bricking the daemon', async () => {
+  handle.close()
+  const statePath = path.join(tmp, 'state.json')
+  fs.rmSync(statePath + '.corrupt', { force: true })
+
+  // Parses cleanly. tasks and graces are null, which nothing downstream survives.
+  fs.writeFileSync(statePath, '{"phase":"WORK","endsAt":null,"tasks":null,"graces":null}')
+
+  const rescued = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath,
+    logPath: path.join(tmp, 'log.jsonl'),
+    quotesPath: path.join(tmp, 'quotes.txt'),
+    configPath: path.join(tmp, 'config.json'),
+    notify: () => {},
+    openUrls: () => {},
+  })
+  const port = await rescued.listen(0)
+  const res = await fetch(`http://127.0.0.1:${port}/state`)
+  const v = await res.json()
+  assert.equal(res.status, 200, `got ${res.status} ${JSON.stringify(v)}`)
+  assert.equal(v.phase, 'IDLE', 'started fresh instead of throwing on every request')
+  assert.deepEqual(v.tasks, [])
+  assert.equal(v.nudgingPhase, true, 'and nudging is on, not stuck')
+  assert.ok(fs.existsSync(statePath + '.corrupt'), 'the bad file is kept for inspection')
+  rescued.close()
+
+  handle = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath,
+    logPath: path.join(tmp, 'log.jsonl'),
+    quotesPath: path.join(tmp, 'quotes.txt'),
+    configPath: path.join(tmp, 'config.json'),
+    notify: () => {},
+    openUrls: () => {},
+  })
+  base = `http://127.0.0.1:${await handle.listen(0)}`
+})
+
+test('every wrong-shaped field is caught, not just the ones that throw loudly', async t => {
+  const bad = [
+    '{"tasks":null}',
+    '{"tasks":{}}',
+    '{"tasks":"none"}',
+    '{"queue":null}',
+    '{"queue":42}',
+    '{"graces":null}',
+    '{"graces":[]}',
+    '{"graces":"reddit.com"}',
+    '{"phase":"WAT"}',
+    '{"phase":null}',
+    '{"phase":7}',
+    '[1,2,3]',
+    '"hello"',
+    'null',
+  ]
+  for (const [i, text] of bad.entries()) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-shape-'))
+    const statePath = path.join(dir, 'state.json')
+    fs.writeFileSync(statePath, text)
+    const solo = createServer({
+      config: { ...DEFAULTS, port: 0 },
+      statePath,
+      logPath: path.join(dir, 'log.jsonl'),
+      quotesPath: path.join(dir, 'quotes.txt'),
+      configPath: path.join(dir, 'config.json'),
+      notify: () => {},
+      openUrls: () => {},
+    })
+    try {
+      const p = await solo.listen(0)
+      const res = await fetch(`http://127.0.0.1:${p}/state`)
+      const v = await res.json()
+      assert.equal(res.status, 200, `case ${i} (${text}) answered ${res.status}`)
+      assert.equal(v.phase, 'IDLE', `case ${i} (${text}) did not start fresh`)
+    } finally {
+      solo.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a valid state file is still loaded, shape check and all', async () => {
+  // The guard must not be so eager that it throws away good state — that would
+  // lose the task list on every restart, which is worse than the bug.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-shape-ok-'))
+  const statePath = path.join(dir, 'state.json')
+  fs.writeFileSync(statePath, JSON.stringify({
+    phase: 'WORK',
+    endsAt: Date.now() + 600_000,
+    paused: false,
+    pausedRemainingMs: null,
+    expiredNotified: false,
+    blocksCompleted: 2,
+    tasks: [{ id: 1, text: 'keep me', done: false }],
+    nextTaskId: 2,
+    queue: [],
+    graces: {},
+  }))
+  const solo = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath,
+    logPath: path.join(dir, 'log.jsonl'),
+    quotesPath: path.join(dir, 'quotes.txt'),
+    configPath: path.join(dir, 'config.json'),
+    notify: () => {},
+    openUrls: () => {},
+  })
+  try {
+    const p = await solo.listen(0)
+    const v = await (await fetch(`http://127.0.0.1:${p}/state`)).json()
+    assert.equal(v.phase, 'WORK', 'good state survives')
+    assert.deepEqual(v.tasks.map(t => t.text), ['keep me'])
+    assert.equal(v.blocksCompleted, 2)
+    assert.equal(fs.existsSync(statePath + '.corrupt'), false, 'nothing was quarantined')
+  } finally {
+    solo.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The daemon answered access-control-allow-origin:* and checked nothing, so ANY
+// page the user visited — reddit.com very much included — could POST /snooze to
+// switch nudging off, POST /grace to buy itself a pass, or POST /sites {remove}
+// to unwatch itself. For a tool whose entire value is that it cannot be switched
+// off on impulse, that is the whole game.
+
+test('originAllowed accepts only the extension, and an absent Origin', () => {
+  assert.equal(originAllowed(undefined), true, 'curl and the CLI send no Origin')
+  assert.equal(originAllowed('chrome-extension://abcdefghijklmnop'), true)
+  assert.equal(originAllowed('chrome-extension://a-different-install-id'), true,
+    'the extension id differs per install and must not be hardcoded')
+  assert.equal(originAllowed('CHROME-EXTENSION://abc'), true,
+    'url schemes are case-insensitive per spec, and new URL normalises them')
+
+  for (const origin of [
+    'https://reddit.com', 'http://reddit.com', 'https://youtube.com',
+    'http://127.0.0.1:7373', 'http://localhost:3000', 'file://',
+    'null', '', 'moz-extension://abc', 'not a url',
+  ]) {
+    assert.equal(originAllowed(origin), false, `origin ${JSON.stringify(origin)} must be rejected`)
+  }
+})
+
+test('a request with no Origin is served, so curl and the CLI keep working', async () => {
+  const res = await fetch(base + '/state')
+  assert.equal(res.status, 200)
+  assert.equal(typeof (await res.json()).phase, 'string')
+})
+
+test('a chrome-extension Origin is served whatever the install id', async () => {
+  const res = await fetch(base + '/state', { headers: { origin: 'chrome-extension://someinstallid' } })
+  assert.equal(res.status, 200)
+  const post = await fetch(base + '/grace', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'chrome-extension://someinstallid' },
+    body: JSON.stringify({ site: 'reddit.com' }),
+  })
+  assert.equal(post.status, 200)
+})
+
+test('a web page Origin is refused 403 on both a POST and a GET', async () => {
+  const snooze = await fetch(base + '/snooze', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://reddit.com' },
+    body: JSON.stringify({ hours: 8 }),
+  })
+  assert.equal(snooze.status, 403, 'reddit.com cannot snooze the nudger')
+  assert.equal(typeof (await snooze.json()).error, 'string', 'and says so as json')
+
+  const read = await fetch(base + '/state', { headers: { origin: 'https://reddit.com' } })
+  assert.equal(read.status, 403, 'nor read the state')
+
+  // And it really did not take effect.
+  const after = await get('/state')
+  assert.notEqual(after.phase, 'SNOOZED', 'the snooze was refused, not merely unreported')
+})
+
+test('a web page cannot unwatch itself or buy itself a grace', async () => {
+  const before = await get('/state')
+  const remove = await fetch(base + '/sites', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://reddit.com' },
+    body: JSON.stringify({ action: 'remove', site: 'reddit.com' }),
+  })
+  assert.equal(remove.status, 403)
+
+  const grace = await fetch(base + '/grace', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://reddit.com' },
+    body: JSON.stringify({ site: 'reddit.com' }),
+  })
+  assert.equal(grace.status, 403)
+
+  const after = await get('/state')
+  assert.deepEqual(after.sites, before.sites, 'the watch list is untouched')
+})
+
+test('a cross-origin preflight is refused too', async () => {
+  const res = await fetch(base + '/snooze', { method: 'OPTIONS', headers: { origin: 'https://reddit.com' } })
+  assert.equal(res.status, 403)
+  const ok = await fetch(base + '/snooze', { method: 'OPTIONS', headers: { origin: 'chrome-extension://abc' } })
+  assert.equal(ok.status, 204, 'the extension still gets its preflight')
 })
 
 test('an unknown route returns 404 as json', async () => {
