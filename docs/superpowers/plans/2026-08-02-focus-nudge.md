@@ -3215,6 +3215,17 @@ button.ghost { background: none; border: 0; color: var(--muted); padding: 0.4rem
 button.ghost:disabled { color: #5b544c; cursor: not-allowed; }
 button.small { padding: 0.35rem 0.7rem; font-size: 0.85rem; }
 
+/* Quiet enough not to compete with "Back to work", clear enough to be findable.
+   Sized between the primary buttons and the greyed-out escape hatch. */
+.quiet-link {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 1px;
+}
+.quiet-link:hover { color: var(--ink); border-bottom-color: var(--muted); }
+
 .center { text-align: center; }
 .down { color: var(--accent); font-size: 0.85rem; margin-top: 1rem; }
 .down code { background: var(--panel); padding: 0.1rem 0.35rem; border-radius: 4px; }
@@ -3468,7 +3479,16 @@ git commit -m "feat: add service worker with navigation interception"
     <button id="save">Save for later</button>
   </div>
 
-  <p class="center" style="margin-top:1.5rem">
+  <!--
+    A plain link, deliberately: it works with no JS and with the daemon down,
+    which the buttons above cannot claim. It replaces this tab rather than opening
+    another, because choosing the dashboard is itself a choice not to go.
+  -->
+  <p class="center" style="margin-top:1.25rem">
+    <a class="quiet-link" href="dashboard.html">edit your tasks on the dashboard</a>
+  </p>
+
+  <p class="center" style="margin-top:0.75rem">
     <button class="ghost" id="continue" disabled></button>
   </p>
 
