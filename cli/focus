@@ -81,9 +81,50 @@ function printStatus(v) {
   }
 }
 
+const HELP = `focus — a pause, a quote, and your unfinished tasks before a distraction.
+
+usage: focus [command]
+
+  status                 current phase, countdown, open tasks   (also: no args)
+  start                  begin a work block, or resume a paused one
+  pause                  pause the running phase
+  skip                   advance to the next phase
+  stop                   back to idle, clears the cycle
+  break                  begin a long break, opening any saved links
+  off <duration>         stop nudging for a while: 2h, 90m, or a bare number of hours
+
+  task                   list the micro-tasks
+  task <text>            add a micro-task
+  task done <id>         tick one off (also: task toggle <id>)
+  task rm <id>           remove one
+  task clear             empty the list
+
+  sites                  list the watched domains
+  sites add <domain>     watch another domain
+  sites remove <domain>  stop watching one
+
+  queue                  list links saved for your next long break
+  queue drain            open them now and empty the queue
+
+  stats                  blocks completed, times you continued anyway
+  --help, -h, help       this text
+
+Phases never advance on their own: an expired block waits for you. Reddit and
+YouTube are nudged during work AND short breaks — a long break or an explicit
+\`focus off\` are the only windows where they open freely.
+
+The daemon holds all state. Start or check it with:
+  systemctl --user status focus-nudge
+`
+
 const [cmd, ...rest] = process.argv.slice(2)
 
 switch (cmd) {
+  case '--help':
+  case '-h':
+  case 'help':
+    console.log(HELP)
+    break
   case 'start':
     printStatus(await call('POST', '/timer', { action: 'start' }))
     break
@@ -163,6 +204,6 @@ switch (cmd) {
   }
   default:
     console.error(`focus: unknown command "${cmd}"`)
-    console.error('  focus [status|start|skip|pause|stop|break|off <dur>|task|sites|queue|stats]')
+    console.error('Try "focus --help".')
     process.exit(1)
 }
