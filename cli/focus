@@ -97,7 +97,8 @@ usage: focus [command]
   task <text>            add a micro-task
   task done <id>         tick one off (also: task toggle <id>)
   task rm <id>           remove one
-  task clear             empty the list
+  task clear             empty the list (ids restart at 1 once it is empty)
+  task clear done        remove only the ticked-off tasks
 
   sites                  list the watched domains
   sites add <domain>     watch another domain
@@ -162,7 +163,9 @@ switch (cmd) {
     } else if (sub === 'rm' || sub === 'remove') {
       printStatus(await call('POST', '/tasks', { action: 'remove', id: Number(words[0]) }))
     } else if (sub === 'clear') {
-      printStatus(await call('POST', '/tasks', { action: 'clear' }))
+      // `task clear` empties everything; `task clear done` keeps what is open.
+      const action = words[0] === 'done' ? 'clearDone' : 'clear'
+      printStatus(await call('POST', '/tasks', { action }))
     } else {
       printStatus(await call('POST', '/tasks', { action: 'add', text: [sub, ...words].join(' ') }))
     }

@@ -239,11 +239,49 @@ test('tasks can be added, toggled, and removed', () => {
   assert.deepEqual(s.tasks.map(t => t.id), [2])
 })
 
-test('task ids keep climbing after a removal', () => {
+test('ids climb while tasks remain, and restart once the list empties', () => {
+  // Deliberate change of intent. Ids used to climb forever, so after a long day
+  // you were typing "task done 47". They only need to be unique among LIVE
+  // tasks, so an empty list is a safe place to restart.
   let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
-  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, CFG).state
   s = reduce(s, { type: 'TASK_ADD', text: 'b' }, T0, CFG).state
-  assert.equal(s.tasks[0].id, 2, 'ids are never reused')
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'c' }, T0, CFG).state
+  assert.deepEqual(s.tasks.map(t => t.id), [2, 3], 'no reuse while another task is live')
+
+  s = reduce(s, { type: 'TASK_REMOVE', id: 2 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_REMOVE', id: 3 }, T0, CFG).state
+  assert.equal(s.nextTaskId, 1, 'emptying the list restarts the numbering')
+  s = reduce(s, { type: 'TASK_ADD', text: 'fresh' }, T0, CFG).state
+  assert.equal(s.tasks[0].id, 1)
+})
+
+test('TASK_CLEAR_DONE removes only the ticked-off tasks', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'keep me' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'done one' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'done two' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 2 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 3 }, T0, CFG).state
+
+  const { state, effects } = reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, CFG)
+  assert.deepEqual(state.tasks.map(t => t.text), ['keep me'])
+  assert.equal(state.nextTaskId, 4, 'ids do not restart while a task survives')
+  assert.equal(effects.find(e => e.event === 'tasks_cleared_done').data.count, 2)
+})
+
+test('TASK_CLEAR_DONE is a no-op when nothing is done', () => {
+  const s = reduce(initialState(), { type: 'TASK_ADD', text: 'open' }, T0, CFG).state
+  const { state, effects } = reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, CFG)
+  assert.deepEqual(state, s, 'same state, not a rebuilt copy')
+  assert.deepEqual(effects, [])
+})
+
+test('clearing every done task also restarts the numbering', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, CFG).state
+  assert.deepEqual(s.tasks, [])
+  assert.equal(s.nextTaskId, 1)
 })
 
 test('blank tasks and unknown ids are ignored', () => {
@@ -271,7 +309,7 @@ test('TASK_CLEAR empties the list silently and touches nothing else', () => {
   const { state, effects } = reduce(s, { type: 'TASK_CLEAR' }, T0, CFG)
   assert.deepEqual(state.tasks, [])
   assert.deepEqual(effects, [], 'an explicit clear is silent — no archive, no log')
-  assert.equal(state.nextTaskId, 3, 'ids do not rewind, so a cleared id is never reused')
+  assert.equal(state.nextTaskId, 1, 'an emptied list restarts the numbering')
   assert.equal(state.queue.length, 1, 'the saved-links queue is untouched')
   assert.equal(state.phase, PHASE.WORK, 'the running block is untouched')
 

@@ -30,6 +30,7 @@ function render(view) {
     el('phase').textContent = 'no daemon'
     el('clock').textContent = ''
     el('pause').textContent = 'Pause'   // a stale "Resume" means nothing when down
+    el('clear-done').hidden = true
     el('site-error').hidden = true      // a stale error contradicts "no daemon"
     renderTasks(el('tasks'), [])
     el('queue-line').textContent = 'unknown'
@@ -43,6 +44,7 @@ function render(view) {
   el('clock').textContent = clockLine(view)
   el('clock').classList.toggle('overrun', Boolean(view.overrun))
   el('pause').textContent = view.paused ? 'Resume' : 'Pause'
+  el('clear-done').hidden = !view.tasks.some(t => t.done)
 
   renderTasks(el('tasks'), view.tasks, {
     onToggle: async id => render(await act(task('toggle', { id }))),
@@ -62,6 +64,7 @@ async function act(promise) {
   return isDown(v) ? null : v
 }
 
+el('clear-done').addEventListener('click', async () => render(await act(task('clearDone'))))
 el('start').addEventListener('click', async () => render(await act(timer('start'))))
 el('skip').addEventListener('click', async () => render(await act(timer('skip'))))
 el('pause').addEventListener('click', async () =>

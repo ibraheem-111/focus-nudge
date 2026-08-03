@@ -190,7 +190,7 @@ export function createServer(opts = {}) {
           case '/snooze':
             return send(200, dispatch({ type: 'SNOOZE', hours: body.hours }))
           case '/tasks': {
-            const map = { add: 'TASK_ADD', toggle: 'TASK_TOGGLE', remove: 'TASK_REMOVE', clear: 'TASK_CLEAR' }
+            const map = { add: 'TASK_ADD', toggle: 'TASK_TOGGLE', remove: 'TASK_REMOVE', clear: 'TASK_CLEAR', clearDone: 'TASK_CLEAR_DONE' }
             const type = map[body.action]
             if (!type) return send(400, { error: 'unknown task action' })
             return send(200, dispatch({ type, text: body.text, id: body.id }))

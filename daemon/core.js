@@ -202,11 +202,22 @@ export function reduce(state, action, now, config) {
 
     case 'TASK_REMOVE': {
       if (!state.tasks.some(t => t.id === action.id)) return { state, effects }
-      return { state: { ...state, tasks: state.tasks.filter(t => t.id !== action.id) }, effects }
+      return { state: withTasks(state, state.tasks.filter(t => t.id !== action.id)), effects }
     }
 
     case 'TASK_CLEAR':
-      return { state: { ...state, tasks: [] }, effects }
+      return { state: withTasks(state, []), effects }
+
+    case 'TASK_CLEAR_DONE': {
+      const open = state.tasks.filter(t => !t.done)
+      if (open.length === state.tasks.length) return { state, effects }
+      effects.push({
+        type: 'log',
+        event: 'tasks_cleared_done',
+        data: { count: state.tasks.length - open.length },
+      })
+      return { state: withTasks(state, open), effects }
+    }
 
     case 'QUEUE_ADD': {
       const url = String(action.url || '').trim()
@@ -303,7 +314,7 @@ function openLongBreak(state, effects) {
         done: next.tasks.filter(t => t.done).length,
       },
     })
-    next = { ...next, tasks: [] }
+    next = withTasks(next, [])
   }
 
   if (next.queue.length > 0) {
@@ -313,6 +324,13 @@ function openLongBreak(state, effects) {
   }
 
   return next
+}
+
+// Ids only need to be unique among LIVE tasks. Once the list empties there is
+// nothing left to confuse, and short ids are far friendlier to type than "done 47"
+// after a long day. Every path that can empty the list goes through here.
+function withTasks(state, tasks) {
+  return { ...state, tasks, nextTaskId: tasks.length === 0 ? 1 : state.nextTaskId }
 }
 
 function normaliseSite(raw) {

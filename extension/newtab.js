@@ -13,6 +13,7 @@ function render(view, down) {
     el('clock').textContent = ''
     el('cycle').textContent = ''
     renderTasks(el('tasks'), [])
+    el('clear-done').hidden = true
     el('queue-line').hidden = true
     el('drain').hidden = true
     return
@@ -34,6 +35,7 @@ function render(view, down) {
   })
 
   el('pause').textContent = view.paused ? 'Resume' : 'Pause'
+  el('clear-done').hidden = !view.tasks.some(t => t.done)
 
   const depth = view.queueDepth
   el('queue-line').hidden = depth === 0
@@ -62,6 +64,9 @@ input.addEventListener('keydown', async e => {
   render(await refreshWith(task('add', { text })), false)
 })
 
+el('clear-done').addEventListener('click', async () => {
+  render(await refreshWith(task('clearDone')), false)
+})
 el('start').addEventListener('click', async () => {
   render(await refreshWith(timer('start')), false)
 })
