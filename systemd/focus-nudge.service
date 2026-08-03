@@ -1,0 +1,22 @@
+[Unit]
+Description=focus-nudge daemon
+Documentation=https://github.com/ibraheem/focus-nudge
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=__NODE__ __REPO__/daemon/server.js
+Restart=on-failure
+RestartSec=2
+# No Environment= lines for DISPLAY/WAYLAND_DISPLAY/DBUS_SESSION_BUS_ADDRESS:
+# the systemd --user manager already exports all three into every unit's
+# environment on this machine (verified empirically — see task-10-report.md).
+# notify-send needs DBUS_SESSION_BUS_ADDRESS, which is inherited; xdg-open
+# (used when the saved-links queue drains) needs DISPLAY/WAYLAND_DISPLAY,
+# also inherited. A hardcoded Environment=DISPLAY=:0 would be an X11-only
+# assumption on a Wayland session and adds nothing this unit doesn't already
+# have.
+
+[Install]
+WantedBy=graphical-session.target
