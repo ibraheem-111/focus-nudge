@@ -1,0 +1,168 @@
+#!/usr/bin/env node
+import { loadConfig } from '../daemon/config.js'
+
+const config = loadConfig()
+const BASE = `http://127.0.0.1:${config.port}`
+
+const PHASE_LABEL = {
+  IDLE: 'idle',
+  WORK: 'work',
+  SHORT_BREAK: 'short break',
+  LONG_BREAK: 'long break',
+  SNOOZED: 'snoozed',
+}
+
+async function call(method, route, body) {
+  let res
+  try {
+    res = await fetch(BASE + route, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(3000),
+    })
+  } catch {
+    console.error('focus: the daemon is not running. Start it with:')
+    console.error('  systemctl --user start focus-nudge')
+    process.exit(1)
+  }
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    console.error(`focus: ${data.error || res.statusText}`)
+    process.exit(1)
+  }
+  return data
+}
+
+function formatDuration(ms) {
+  const sign = ms < 0 ? '-' : ''
+  const total = Math.floor(Math.abs(ms) / 1000)
+  const m = Math.floor(total / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return `${sign}${m}:${s}`
+}
+
+// "2h", "90m", "1.5h", or a bare number of hours.
+function parseDuration(input) {
+  const m = String(input ?? '').trim().match(/^(\d+(?:\.\d+)?)\s*([hm]?)$/i)
+  if (!m) return null
+  const value = Number(m[1])
+  if (!Number.isFinite(value) || value <= 0) return null
+  return m[2].toLowerCase() === 'm' ? value / 60 : value
+}
+
+function printStatus(v) {
+  const label = PHASE_LABEL[v.phase] ?? v.phase
+  let line = label
+  if (v.remainingMs !== null) {
+    line += v.paused
+      ? ` — paused, ${formatDuration(v.remainingMs)} left`
+      : v.overrun
+        ? ` — ran over by ${formatDuration(-v.remainingMs)}`
+        : ` — ${formatDuration(v.remainingMs)} left`
+  }
+  if (v.phase === 'WORK' || v.phase === 'SHORT_BREAK') {
+    line += `  [block ${v.blocksCompleted + (v.phase === 'WORK' ? 1 : 0)}/${v.blocksPerCycle}]`
+  }
+  console.log(line)
+
+  if (v.tasks.length) {
+    console.log()
+    for (const t of v.tasks) console.log(`  ${t.done ? '[x]' : '[ ]'} ${t.id}  ${t.text}`)
+  }
+  if (v.queueDepth) {
+    console.log()
+    console.log(`  ${v.queueDepth} link${v.queueDepth === 1 ? '' : 's'} saved for your next long break`)
+  }
+  if (v.persisted === false) {
+    console.log()
+    console.log('  ! state is not reaching disk — changes will be lost on restart')
+    console.log('    check: systemctl --user status focus-nudge')
+  }
+}
+
+const [cmd, ...rest] = process.argv.slice(2)
+
+switch (cmd) {
+  case 'start':
+    printStatus(await call('POST', '/timer', { action: 'start' }))
+    break
+  case 'skip':
+  case 'next':
+    printStatus(await call('POST', '/timer', { action: 'skip' }))
+    break
+  case 'pause':
+    printStatus(await call('POST', '/timer', { action: 'pause' }))
+    break
+  case 'stop':
+    printStatus(await call('POST', '/timer', { action: 'stop' }))
+    break
+  case 'break':
+    printStatus(await call('POST', '/timer', { action: 'breakLong' }))
+    break
+  case 'off': {
+    const hours = parseDuration(rest[0] ?? '1')
+    if (hours === null) {
+      console.error('focus: could not read that duration. Try "focus off 2h" or "focus off 90m".')
+      process.exit(1)
+    }
+    printStatus(await call('POST', '/snooze', { hours }))
+    break
+  }
+  case undefined:
+  case 'status':
+    printStatus(await call('GET', '/state'))
+    break
+  case 'task': {
+    const [sub, ...words] = rest
+    if (!sub) { printStatus(await call('GET', '/state')); break }
+    if (sub === 'done' || sub === 'toggle') {
+      printStatus(await call('POST', '/tasks', { action: 'toggle', id: Number(words[0]) }))
+    } else if (sub === 'rm' || sub === 'remove') {
+      printStatus(await call('POST', '/tasks', { action: 'remove', id: Number(words[0]) }))
+    } else if (sub === 'clear') {
+      printStatus(await call('POST', '/tasks', { action: 'clear' }))
+    } else {
+      printStatus(await call('POST', '/tasks', { action: 'add', text: [sub, ...words].join(' ') }))
+    }
+    break
+  }
+  case 'sites': {
+    const [sub, domain] = rest
+    if (!sub) {
+      const v = await call('GET', '/state')
+      for (const s of v.sites) console.log(`  ${s}`)
+      break
+    }
+    if (sub !== 'add' && sub !== 'remove') {
+      console.error('focus: use "focus sites add <domain>" or "focus sites remove <domain>".')
+      process.exit(1)
+    }
+    const v = await call('POST', '/sites', { action: sub, site: domain })
+    for (const s of v.sites) console.log(`  ${s}`)
+    break
+  }
+  case 'queue': {
+    if (rest[0] === 'drain') {
+      printStatus(await call('POST', '/queue', { drain: true }))
+      break
+    }
+    const v = await call('GET', '/state')
+    if (!v.queue.length) console.log('  nothing saved')
+    for (const q of v.queue) console.log(`  ${q.title || q.url}\n    ${q.url}`)
+    break
+  }
+  case 'stats': {
+    const s = await call('GET', '/stats')
+    const t = s.totals
+    console.log(`  blocks completed   ${t.blocksCompleted}`)
+    console.log(`  continued anyway   ${t.nudgesContinued}`)
+    console.log(`  saved for later    ${t.savedForLater}`)
+    console.log(`  queues drained     ${t.queueDrained}`)
+    break
+  }
+  default:
+    console.error(`focus: unknown command "${cmd}"`)
+    console.error('  focus [status|start|skip|pause|stop|break|off <dur>|task|sites|queue|stats]')
+    process.exit(1)
+}
