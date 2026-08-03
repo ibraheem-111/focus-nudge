@@ -2,7 +2,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { loadConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
+import { loadConfig, saveConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
 import { initialState, reduce, settle, view, PHASE } from './core.js'
 
 const TIMER_ACTIONS = {
@@ -177,9 +177,11 @@ export function createServer(opts = {}) {
       else if (e.type === 'openUrls') openUrls(e.urls)
       else if (e.type === 'setSites') {
         config = mergeConfig({ ...config, sites: e.sites })
+        // saveConfig rather than a local mkdir + writeAtomic: this was the second
+        // copy of that pair, and the two could drift. It takes the path, so the
+        // smoke test's scratch configPath still works.
         try {
-          fs.mkdirSync(path.dirname(paths.config), { recursive: true })
-          writeAtomic(paths.config, JSON.stringify(config, null, 2))
+          saveConfig(config, paths.config)
         } catch (err) {
           console.error('focus-nudge: could not write config:', err.message)
         }

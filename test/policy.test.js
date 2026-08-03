@@ -37,6 +37,16 @@ test('the nudging phases are exactly idle, work, and short break', () => {
   assert.deepEqual([...NUDGE_PHASES].sort(), ['IDLE', 'SHORT_BREAK', 'WORK'])
 })
 
+// The duplication between core.NUDGING_PHASES and policy.NUDGE_PHASES is
+// deliberate — the extension has to decide with the daemon unreachable, so it
+// cannot import from daemon/. But nothing stopped the two drifting, and a drift
+// is silent in exactly the wrong direction: a phase the daemon treats as nudging
+// but the policy does not would leave every watched site open during it.
+test('policy.NUDGE_PHASES and core.NUDGING_PHASES have not drifted apart', async () => {
+  const { NUDGING_PHASES } = await import('../daemon/core.js')
+  assert.deepEqual([...NUDGE_PHASES].sort(), [...NUDGING_PHASES].sort())
+})
+
 test('a watched site is nudged during work', () => {
   const d = decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: SITES, now: T0 })
   assert.equal(d.action, 'nudge')

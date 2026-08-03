@@ -51,6 +51,17 @@ function parseDuration(input) {
   return m[2].toLowerCase() === 'm' ? value / 60 : value
 }
 
+// Task ids are the small integers `focus status` prints. Anything else is a typo,
+// and a typo must not look like it worked.
+function taskId(raw, sub) {
+  const n = Number(raw)
+  if (raw === undefined || String(raw).trim() === '' || !Number.isInteger(n) || n <= 0) {
+    console.error(`focus: "focus task ${sub}" needs a task id. Try "focus task ${sub} 1", or "focus task" to list them.`)
+    process.exit(1)
+  }
+  return n
+}
+
 function printStatus(v) {
   const label = PHASE_LABEL[v.phase] ?? v.phase
   let line = label
@@ -111,9 +122,9 @@ usage: focus [command]
   stats <n>              show the last <n> days of history (default 14)
   --help, -h, help       this text
 
-Phases never advance on their own: an expired block waits for you. Reddit and
-YouTube are nudged during work AND short breaks — a long break or an explicit
-\`focus off\` are the only windows where they open freely.
+Phases never advance on their own: an expired block waits for you. Watched sites
+are nudged during work AND short breaks — a long break or an explicit
+\`focus off\` are the only windows where they open freely. See \`focus sites\`.
 
 The daemon holds all state. Start or check it with:
   systemctl --user status focus-nudge
@@ -159,10 +170,13 @@ switch (cmd) {
   case 'task': {
     const [sub, ...words] = rest
     if (!sub) { printStatus(await call('GET', '/state')); break }
-    if (sub === 'done' || sub === 'toggle') {
-      printStatus(await call('POST', '/tasks', { action: 'toggle', id: Number(words[0]) }))
-    } else if (sub === 'rm' || sub === 'remove') {
-      printStatus(await call('POST', '/tasks', { action: 'remove', id: Number(words[0]) }))
+    if (sub === 'done' || sub === 'toggle' || sub === 'rm' || sub === 'remove') {
+      // Without an id this sent id: NaN, which JSON.stringify writes as null. The
+      // daemon then matched no task and returned the unchanged state with a 200,
+      // so `focus task done` printed the list and silently did nothing.
+      const id = taskId(words[0], sub)
+      const action = sub === 'done' || sub === 'toggle' ? 'toggle' : 'remove'
+      printStatus(await call('POST', '/tasks', { action, id }))
     } else if (sub === 'clear') {
       // `task clear` empties everything; `task clear done` keeps what is open.
       const action = words[0] === 'done' ? 'clearDone' : 'clear'
@@ -183,8 +197,30 @@ switch (cmd) {
       console.error('focus: use "focus sites add <domain>" or "focus sites remove <domain>".')
       process.exit(1)
     }
+    if (!domain) {
+      console.error(`focus: which domain? Try "focus sites ${sub} reddit.com".`)
+      process.exit(1)
+    }
+
+    // The daemon canonicalises entries and rejects anything without a dot, but a
+    // rejection returns the unchanged state with a 200 — indistinguishable from
+    // success unless the count is compared. `focus sites add com` used to print
+    // the untouched list and look like it had worked. The popup has compared
+    // before/after since its own review; the CLI never got it.
+    const before = await call('GET', '/state')
     const v = await call('POST', '/sites', { action: sub, site: domain })
     for (const s of v.sites) console.log(`  ${s}`)
+
+    if (v.sites.length === before.sites.length) {
+      console.error()
+      if (sub === 'add') {
+        // Keep what they typed visible so it can be corrected rather than retyped.
+        console.error(`focus: "${domain}" was not added — check it is a full domain, or it may already be listed.`)
+      } else {
+        console.error(`focus: "${domain}" was not removed — it does not appear to be listed.`)
+      }
+      process.exit(1)
+    }
     break
   }
   case 'queue': {

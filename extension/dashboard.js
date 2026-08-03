@@ -13,9 +13,16 @@ function render(view, down) {
     el('clock').textContent = ''
     el('cycle').textContent = ''
     el('today').textContent = ''
+    // Matched to the popup's daemon-down branch, which was reviewed more
+    // recently. The two surfaces show the same daemon and used to disagree about
+    // it: this one left the Pause/Resume label at whatever the last live poll
+    // said, so the dashboard could read "Resume" while the popup read "Pause",
+    // and it hid the queue line while the popup showed "unknown".
+    el('pause').textContent = 'Pause'   // a stale "Resume" means nothing when down
     renderTasks(el('tasks'), [])
     el('clear-done').hidden = true
-    el('queue-line').hidden = true
+    el('queue-line').hidden = false
+    el('queue-line').textContent = 'unknown'
     el('drain').hidden = true
     return
   }
@@ -38,13 +45,14 @@ function render(view, down) {
   el('pause').textContent = view.paused ? 'Resume' : 'Pause'
   el('clear-done').hidden = !view.tasks.some(t => t.done)
 
+  // Always shown, as in the popup: "nothing saved" is information, and a line
+  // that appears and vanishes is how the two surfaces came to disagree.
   const depth = view.queueDepth
-  el('queue-line').hidden = depth === 0
+  el('queue-line').hidden = false
+  el('queue-line').textContent = depth
+    ? `${depth} link${depth === 1 ? '' : 's'} saved for your next long break`
+    : 'nothing saved'
   el('drain').hidden = depth === 0
-  if (depth > 0) {
-    el('queue-line').textContent =
-      `${depth} link${depth === 1 ? '' : 's'} saved for your next long break`
-  }
 }
 
 async function refreshWith(promise) {

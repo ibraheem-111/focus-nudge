@@ -49,6 +49,53 @@ test('ADVANCE out of work goes to a short break and banks the block', () => {
   assert.equal(state.endsAt, T0 + 25 * MIN + 5 * MIN)
 })
 
+// block_completed is the sole input to every number `focus stats` prints — today,
+// last 7 days, all time, and the daily bar chart all come from counting these log
+// lines. Nothing asserted it was ever emitted, so the whole stats feature rested
+// on one unpinned effects.push.
+test('ADVANCE out of work logs block_completed, and nothing else does', () => {
+  const working = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const { effects } = reduce(working, { type: 'ADVANCE' }, T0 + 25 * MIN, CFG)
+  const logged = effects.filter(e => e.type === 'log' && e.event === 'block_completed')
+  assert.equal(logged.length, 1, 'exactly one block_completed per finished work block')
+
+  // Leaving any other phase is not a completed block and must not inflate the count.
+  const notBlocks = [
+    { ...initialState(), phase: PHASE.SHORT_BREAK, endsAt: T0 + 5 * MIN },
+    { ...initialState(), phase: PHASE.LONG_BREAK, endsAt: T0 + 20 * MIN },
+    { ...initialState(), phase: PHASE.SNOOZED, endsAt: T0 + 60 * MIN },
+    initialState(),
+  ]
+  for (const s of notBlocks) {
+    const out = reduce(s, { type: 'ADVANCE' }, T0, CFG)
+    assert.equal(
+      out.effects.some(e => e.event === 'block_completed'), false,
+      `leaving ${s.phase} must not count as a completed block`,
+    )
+  }
+
+  // Nor may any other action mint one.
+  for (const action of [
+    { type: 'START' }, { type: 'PAUSE' }, { type: 'STOP' }, { type: 'BREAK_LONG' },
+    { type: 'SNOOZE', hours: 1 }, { type: 'GRACE', site: 'reddit.com' },
+  ]) {
+    const out = reduce(working, action, T0 + MIN, CFG)
+    assert.equal(
+      out.effects.some(e => e.event === 'block_completed'), false,
+      `${action.type} must not log block_completed`,
+    )
+  }
+})
+
+test('the fourth block still logs block_completed on the way into a long break', () => {
+  // The long-break branch banks and resets in one step; the log line must survive
+  // that, or every fourth block would go uncounted.
+  const s = { ...initialState(), phase: PHASE.WORK, endsAt: T0 + MIN, blocksCompleted: 3 }
+  const { state, effects } = reduce(s, { type: 'ADVANCE' }, T0, CFG)
+  assert.equal(state.phase, PHASE.LONG_BREAK)
+  assert.equal(effects.filter(e => e.event === 'block_completed').length, 1)
+})
+
 test('ADVANCE out of a short break returns to work', () => {
   let s = reduce(initialState(), { type: 'START' }, T0, CFG).state
   s = reduce(s, { type: 'ADVANCE' }, T0, CFG).state

@@ -557,6 +557,56 @@ test('a cross-origin preflight is refused too', async () => {
   assert.equal(ok.status, 204, 'the extension still gets its preflight')
 })
 
+// Every number `focus stats` prints is derived from block_completed lines in
+// log.jsonl. Nothing asserted the daemon actually writes them, so the whole stats
+// feature rested on an untested path from effect to file to summary.
+test('finishing a work block writes block_completed to the log and shows in /stats', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-blocks-'))
+  const logPath = path.join(dir, 'log.jsonl')
+  const solo = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath: path.join(dir, 'state.json'),
+    logPath,
+    quotesPath: path.join(dir, 'quotes.txt'),
+    configPath: path.join(dir, 'config.json'),
+    notify: () => {},
+    openUrls: () => {},
+  })
+  try {
+    const p = await solo.listen(0)
+    const call = (route, body) => fetch(`http://127.0.0.1:${p}${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json())
+
+    const zero = await (await fetch(`http://127.0.0.1:${p}/stats`)).json()
+    assert.equal(zero.totals.blocksCompleted, 0, 'a fresh log has no blocks')
+
+    await call('/timer', { action: 'start' })
+    await call('/timer', { action: 'skip' })    // work -> short break: one block done
+
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    const blocks = lines.filter(e => e.event === 'block_completed')
+    assert.equal(blocks.length, 1, `expected one block_completed, log was ${JSON.stringify(lines)}`)
+    assert.equal(typeof blocks[0].at, 'number', 'with a real timestamp, or it buckets as "unknown"')
+    assert.ok(blocks[0].at > 0)
+
+    const one = await (await fetch(`http://127.0.0.1:${p}/stats`)).json()
+    assert.equal(one.totals.blocksCompleted, 1, 'and summariseLog counts it')
+    assert.equal(one.totals.today, 1, 'today, since the timestamp is now')
+    assert.equal(one.totals.last7, 1)
+
+    // A break ending is not a block. Only work completions count.
+    await call('/timer', { action: 'skip' })    // short break -> work
+    const still = await (await fetch(`http://127.0.0.1:${p}/stats`)).json()
+    assert.equal(still.totals.blocksCompleted, 1, 'leaving a break did not inflate the count')
+  } finally {
+    solo.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('an unknown route returns 404 as json', async () => {
   const res = await fetch(base + '/nope')
   assert.equal(res.status, 404)
