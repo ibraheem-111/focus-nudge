@@ -1,6 +1,6 @@
 import { BUNDLED_QUOTES, pickQuote } from './quotes.js'
 import { getState, getQuotes, grace, queueAdd, isDown } from './api.js'
-import { clockLine, renderTasks, PHASE_LABEL } from './ui.js'
+import { clockLine, renderTasks, PHASE_LABEL, countdown } from './ui.js'
 
 const params = new URLSearchParams(location.search)
 const targetUrl = params.get('url') ?? ''
@@ -38,10 +38,25 @@ document.title = targetHost ? `focus — ${targetHost}` : 'focus'
   el.author.textContent = q.author ? `— ${q.author}` : ''
 })()
 
+// A missing or unparsable ?url= must never leave the escape hatch dead. If we
+// cannot send the user onward, send them back instead — the one outcome this
+// design forbids is a screen with no way off it.
+const targetUsable = (() => {
+  try {
+    const u = new URL(targetUrl)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch { return false }
+})()
+
 function release() {
-  if (released || !targetUrl) return
+  if (released) return
   released = true
-  location.replace(targetUrl)
+  if (!targetUsable) return goBack()
+  try {
+    location.replace(targetUrl)
+  } catch {
+    goBack()
+  }
 }
 
 function render(view, down) {
@@ -76,29 +91,31 @@ async function poll() {
 poll()
 setInterval(poll, 1000)
 
-// The countdown gates the escape hatch; it never removes it.
-let secondsLeft = 10
-function tickCountdown() {
-  if (secondsLeft > 0) {
-    el.continue.textContent = `continue anyway  (${secondsLeft})`
+// The countdown gates the escape hatch; it never removes it. It starts NOW, not
+// after a daemon round trip — gating it on the network would leave the button
+// blank and silently extend the real wait by up to api.js's 1500 ms timeout.
+const clock = countdown({
+  seconds: 10,
+  onTick: n => {
+    el.continue.textContent = `continue anyway  (${n})`
     el.continue.disabled = true
-    secondsLeft--
-    setTimeout(tickCountdown, 1000)
-  } else {
+  },
+  onDone: () => {
     el.continue.textContent = 'continue anyway'
     el.continue.disabled = false
-  }
-}
+  },
+})
+
+// If the daemon specifies a different countdown, apply it to the running clock.
 getState().then(v => {
-  if (!isDown(v) && Number.isFinite(v.countdownSeconds)) secondsLeft = v.countdownSeconds
-  tickCountdown()
+  if (!isDown(v)) clock.setSeconds(v.countdownSeconds)
 })
 
 function goBack() {
   chrome.runtime.sendMessage({ type: 'goBack' }, () => {})
 }
 
-el.back.addEventListener('click', goBack)
+el.back.addEventListener('click', () => { el.back.disabled = true; goBack() })
 
 el.save.addEventListener('click', async () => {
   el.save.disabled = true

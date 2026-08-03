@@ -21,6 +21,42 @@ export function clockLine(v) {
   return `${formatDuration(v.remainingMs)} left ${noun}`
 }
 
+// The pause screen's countdown lives here so it can be tested without a DOM.
+// `schedule` is injectable, which makes the whole thing deterministic in tests.
+//
+// Two properties matter and both are load-bearing:
+//   - it starts immediately, never gated on a network call, so the visible
+//     countdown begins at page load rather than after a daemon round trip
+//   - onDone always fires. A countdown that never completes would leave the
+//     escape hatch disabled forever, which is the one outcome the design forbids.
+export function countdown({ seconds = 10, onTick, onDone, schedule = setTimeout }) {
+  let left = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0
+  let finished = false
+
+  const step = () => {
+    if (finished) return
+    if (left > 0) {
+      onTick?.(left)
+      left -= 1
+      schedule(step, 1000)
+    } else {
+      finished = true
+      onDone?.()
+    }
+  }
+  step()
+
+  return {
+    // Lets a late-arriving countdownSeconds from the daemon adjust a countdown
+    // that is already running, without restarting or delaying it.
+    setSeconds(s) {
+      if (finished) return
+      if (Number.isFinite(s) && s >= 0) left = Math.floor(s)
+    },
+    get finished() { return finished },
+  }
+}
+
 export function renderTasks(el, tasks, { onToggle, onRemove } = {}) {
   el.replaceChildren()
   if (!tasks || tasks.length === 0) {
