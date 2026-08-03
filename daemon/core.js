@@ -362,9 +362,24 @@ function normaliseSite(raw) {
 
 const EXPIRING_PHASES = new Set([PHASE.WORK, PHASE.SHORT_BREAK, PHASE.LONG_BREAK])
 
+const SANCTIONED_PHASES = new Set([PHASE.LONG_BREAK, PHASE.SNOOZED])
+
 export function settle(state, now, config) {
   const effects = []
   let next = state
+
+  // A sanctioned window with no end cannot be reached legitimately: SNOOZE and
+  // BREAK_LONG both always set a finite endsAt. It only exists in a state.json
+  // written by the old PAUSE bug, which cleared endsAt and so made every expiry
+  // branch below unreachable — nudging off permanently, surviving restarts.
+  // Refusing to pause those phases stops the trap being set, but does nothing for
+  // a file that already holds one, and the escape hatch has to work for those too.
+  // The only safe reading of a window with no end is that it is over.
+  if (SANCTIONED_PHASES.has(next.phase) && next.endsAt === null) {
+    next = { ...initialState(), tasks: next.tasks, nextTaskId: next.nextTaskId, queue: next.queue, graces: next.graces }
+    effects.push({ type: 'notify', title: 'Nudging back on', body: 'Recovered an interrupted break.' })
+    effects.push({ type: 'log', event: 'sanctioned_window_recovered', data: { from: state.phase } })
+  }
 
   if (next.phase === PHASE.SNOOZED && next.endsAt !== null && now >= next.endsAt) {
     next = { ...initialState(), tasks: next.tasks, nextTaskId: next.nextTaskId, queue: next.queue, graces: next.graces }

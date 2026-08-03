@@ -244,6 +244,61 @@ test('snooze expiry changes nothing the user can see except the phase', () => {
   assert.equal(state.blocksCompleted, 0, 'already 0 from entry — nothing silently lost here')
 })
 
+// Refusing to pause a sanctioned window stops the trap being SET, but it does
+// nothing for a state.json that already holds one — that file outlives the fix,
+// and settle could never expire it because every expiry branch needs an endsAt.
+// A sanctioned phase with no end is unreachable by any legitimate path (SNOOZE
+// and BREAK_LONG both always set a finite endsAt), so encountering one can only
+// mean the old bug wrote it, and the only safe reading is "over".
+test('settle frees a snooze that was already trapped with no endsAt', () => {
+  const trapped = {
+    ...initialState(),
+    phase: PHASE.SNOOZED,
+    endsAt: null,
+    paused: true,
+    pausedRemainingMs: 3_540_000,
+    tasks: [{ id: 1, text: 'survive me', done: false }],
+    nextTaskId: 2,
+  }
+  const { state, effects } = settle(trapped, T0, CFG)
+  assert.equal(state.phase, PHASE.IDLE, 'the dead snooze is released')
+  assert.equal(state.paused, false)
+  assert.equal(state.pausedRemainingMs, null)
+  assert.equal(view(state, T0, CFG).nudgingPhase, true, 'and nudging is back on')
+  assert.deepEqual(state.tasks, [{ id: 1, text: 'survive me', done: false }], 'tasks survive the rescue')
+  assert.equal(state.nextTaskId, 2)
+  assert.ok(effects.some(e => e.type === 'notify'), 'the user is told, not silently changed under them')
+})
+
+test('settle frees a long break that was already trapped with no endsAt', () => {
+  const trapped = { ...initialState(), phase: PHASE.LONG_BREAK, endsAt: null, paused: true, pausedRemainingMs: 60_000 }
+  const { state } = settle(trapped, T0, CFG)
+  assert.equal(state.phase, PHASE.IDLE)
+  assert.equal(view(state, T0, CFG).nudgingPhase, true)
+})
+
+test('the rescue does not touch a sanctioned window that still has an end', () => {
+  // It must only fire on the impossible shape, never shorten a real snooze.
+  const live = reduce(initialState(), { type: 'SNOOZE', hours: 2 }, T0, CFG).state
+  const { state, effects } = settle(live, T0 + 60 * MIN, CFG)
+  assert.equal(state.phase, PHASE.SNOOZED, 'a running snooze is left alone')
+  assert.deepEqual(effects, [])
+
+  const onBreak = reduce(initialState(), { type: 'BREAK_LONG' }, T0, CFG).state
+  assert.equal(settle(onBreak, T0 + MIN, CFG).state.phase, PHASE.LONG_BREAK)
+})
+
+test('a legitimately paused WORK block is never mistaken for the trap', () => {
+  // WORK with endsAt null and paused true is the normal, correct pause shape.
+  let s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  s = reduce(s, { type: 'PAUSE' }, T0 + 10 * MIN, CFG).state
+  assert.equal(s.endsAt, null)
+  assert.equal(s.paused, true)
+  const { state, effects } = settle(s, T0 + 99 * MIN, CFG)
+  assert.deepEqual(state, s, 'a paused work block is untouched no matter how long it sits')
+  assert.deepEqual(effects, [])
+})
+
 test('settle returns snooze to idle once it expires', () => {
   const s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
   const before = settle(s, T0 + 59 * MIN, CFG)
