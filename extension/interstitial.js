@@ -1,6 +1,7 @@
 import { BUNDLED_QUOTES, pickQuote } from './quotes.js'
 import { getState, getQuotes, grace, queueAdd, task, isDown } from './api.js'
 import { clockLine, renderTasks, PHASE_LABEL, countdown } from './ui.js'
+import { matchSite, FALLBACK_GRACE_MINUTES } from './policy.js'
 
 const params = new URLSearchParams(location.search)
 const targetUrl = params.get('url') ?? ''
@@ -20,7 +21,17 @@ const el = {
 }
 
 let released = false
-let matchedSite = targetHost
+
+// The key the grace is filed under has to be the site the DAEMON is watching,
+// not this page's hostname — policy.decide only ever looks up graces[site], so a
+// pass recorded under "old.reddit.com" is a pass nobody will ever find, and
+// `continue anyway` silently loops. matchSite is the one implementation of that
+// rule; this page used to carry a second, weaker copy that missed trailing dots,
+// non-string entries and dotless entries. Clients do not re-derive daemon
+// decisions. Until the first poll answers, the built-in fallback list is used —
+// the same list sw.js decides from when it has no view either.
+let matchedSite = matchSite(targetUrl, null)
+let graceMinutes = FALLBACK_GRACE_MINUTES
 
 function safeHost(url) {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
@@ -74,8 +85,13 @@ function render(view, down) {
   if (view.nudgingPhase === false) return release()
 
   // Track the site the daemon is actually watching, so the grace call matches.
-  const site = (view.sites ?? []).find(s => targetHost === s || targetHost.endsWith('.' + s))
+  // A null result means its list does not cover this visit; keep the fallback
+  // match rather than clearing a working key.
+  const site = matchSite(targetUrl, view.sites)
   if (site) matchedSite = site
+  if (typeof view.graceMinutes === 'number' && view.graceMinutes > 0) {
+    graceMinutes = view.graceMinutes
+  }
 
   el.phase.textContent = PHASE_LABEL[view.phase] ?? view.phase
   el.clock.textContent = clockLine(view)
@@ -127,14 +143,37 @@ el.back.addEventListener('click', () => { el.back.disabled = true; goBack() })
 
 el.save.addEventListener('click', async () => {
   el.save.disabled = true
-  await queueAdd(targetUrl, targetHost)
+  const res = await queueAdd(targetUrl, targetHost)
+  // The daemon holds the queue, so with it down the link is simply gone. Saying
+  // "saved" then navigating away loses the link AND the fact that it was lost.
+  if (isDown(res)) {
+    el.save.textContent = 'not saved — no daemon'
+    el.save.disabled = false
+    return
+  }
   el.save.textContent = 'saved'
   goBack()
 })
 
+// Records a pass the service worker will honour while the daemon stays down.
+// Without it, releasing the navigation just walks into the next interception and
+// the escape hatch is futile — the one thing this design forbids. Session-scoped
+// on purpose: it dies with the browser, so a dead daemon never grants standing
+// access, and sw.js drops it the moment the daemon answers again.
+async function recordFallbackPass(site) {
+  try {
+    await chrome.storage.session.set({
+      [`graceFallback:${site}`]: Date.now() + graceMinutes * 60_000,
+    })
+  } catch {}
+}
+
 el.continue.addEventListener('click', async () => {
   el.continue.disabled = true
-  if (matchedSite) await grace(matchedSite)
+  if (matchedSite) {
+    const res = await grace(matchedSite)
+    if (isDown(res)) await recordFallbackPass(matchedSite)
+  }
   release()
 })
 

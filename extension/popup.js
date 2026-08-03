@@ -77,8 +77,8 @@ el('pause').addEventListener('click', async () =>
   render(await act(timer(latest?.paused ? 'start' : 'pause'))))
 // The daemon opens the saved links itself: server.js spawns xdg-open when
 // core.js emits the openUrls effect, and that path is also what makes
-// `focus break` work from the terminal. Sending them to the service worker here
-// as well would open every link twice.
+// `focus break` work from the terminal. This click only asks for the phase
+// change; nothing here opens tabs.
 el('break').addEventListener('click', async () => {
   render(await act(timer('breakLong')))
 })

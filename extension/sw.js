@@ -4,6 +4,9 @@ import { getState, isDown } from './api.js'
 const POLL_ALARM = 'focus-nudge-poll'
 const CACHE_KEY = 'cachedView'
 const FRESH_MS = 2000
+// Passes the pause screen recorded for itself because the daemon was unreachable
+// when `continue anyway` was pressed. See readFallbackPasses below.
+const FALLBACK_PREFIX = 'graceFallback:'
 
 let cache = { view: null, at: 0, down: true }
 
@@ -47,6 +50,28 @@ function interstitialUrl(target) {
   return chrome.runtime.getURL(`interstitial.html?url=${encodeURIComponent(target)}`)
 }
 
+// With the daemon down, POST /grace cannot record anything, so `continue anyway`
+// would release the navigation only for this listener to intercept it again —
+// forever, with no way onward. The pause screen writes a session-scoped pass
+// instead and we honour it HERE, but only while the daemon is still unreachable:
+// policy.decide is handed `down` so a reachable daemon always overrules it.
+// Session storage is deliberate — the pass dies with the browser, so a dead
+// daemon can never grant standing access. A missing pass still nudges.
+//
+// Only read when down, so the normal path costs nothing.
+async function readFallbackPasses() {
+  try {
+    const all = await chrome.storage.session.get(null)
+    const passes = {}
+    for (const [key, until] of Object.entries(all)) {
+      if (key.startsWith(FALLBACK_PREFIX)) passes[key.slice(FALLBACK_PREFIX.length)] = until
+    }
+    return passes
+  } catch {
+    return null   // unreadable storage is missing data: fail closed and nudge
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(POLL_ALARM, { periodInMinutes: 0.5 })
   refresh()
@@ -61,17 +86,17 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === POLL_ALARM) refresh()
 })
 
-chrome.webNavigation.onBeforeNavigate.addListener(async details => {
+async function onNavigation(details) {
   if (details.frameId !== 0) return
   const target = details.url
   if (!target.startsWith('http://') && !target.startsWith('https://')) return
 
-  // Capture where the tab currently is BEFORE the state lookup. onBeforeNavigate
-  // does not block the browser, and a cold cache makes currentCache() wait on a
-  // real fetch (up to api.js's 1500 ms timeout). By then the navigation may have
-  // committed and tab.url would be the blocked URL itself — so "Back to work"
-  // would navigate right back into the interstitial. The `tab.url !== target`
-  // guard below makes that harmless even if it does happen.
+  // Capture where the tab currently is BEFORE the state lookup. The navigation
+  // events do not block the browser, and a cold cache makes currentCache() wait
+  // on a real fetch (up to api.js's 1500 ms timeout). By then the navigation may
+  // have committed and tab.url would be the blocked URL itself — so "Back to
+  // work" would navigate right back into the interstitial. The `tab.url !==
+  // target` guard below makes that harmless even if it does happen.
   let priorUrl = null
   try {
     const tab = await chrome.tabs.get(details.tabId)
@@ -81,6 +106,7 @@ chrome.webNavigation.onBeforeNavigate.addListener(async details => {
   } catch {}
 
   const { view, down } = await currentCache()
+  const fallbackPasses = down ? await readFallbackPasses() : null
 
   const verdict = decide({
     url: target,
@@ -88,19 +114,43 @@ chrome.webNavigation.onBeforeNavigate.addListener(async details => {
     graces: down ? null : view?.graces,
     sites: view?.sites ?? null,
     now: Date.now(),
+    down,
+    fallbackPasses,
   })
 
   if (verdict.action === 'allow') return
 
   // priorUrl was captured at the top of this listener, before any await.
-  try {
-    await chrome.storage.session.set({ [`priorUrl:${details.tabId}`]: priorUrl })
-  } catch {}
+  // Only ever written when we actually found somewhere to go back TO. Since
+  // onHistoryStateUpdated is also wired up, a single visit can be evaluated many
+  // times, and an unconditional write would let a later evaluation — whose
+  // tab.url is by then our own interstitial, so priorUrl is null — overwrite the
+  // good value the first one stored, silently downgrading "Back to work" into
+  // "close the tab".
+  if (priorUrl !== null) {
+    try {
+      await chrome.storage.session.set({ [`priorUrl:${details.tabId}`]: priorUrl })
+    } catch {}
+  }
 
   try {
     await chrome.tabs.update(details.tabId, { url: interstitialUrl(target) })
   } catch {}
-})
+}
+
+// Both events, on purpose. All four watched sites are single-page apps: clicking
+// through YouTube or Reddit fires onHistoryStateUpdated and NOT
+// onBeforeNavigate, so listening only to the latter meant a grace could lapse
+// without another pause screen ever appearing as long as the user stayed inside
+// the app — the timer the whole design rests on never bound. Both are covered by
+// the `webNavigation` permission the manifest already declares.
+//
+// This makes the handler run far more often, which is safe because it is a read
+// plus a cached decision: currentCache() only reaches the network when its
+// 2-second cache is stale, and the one write on the nudge path is now guarded
+// above. chrome.storage.session is memory-backed, so nothing here touches disk.
+chrome.webNavigation.onBeforeNavigate.addListener(onNavigation)
+chrome.webNavigation.onHistoryStateUpdated.addListener(onNavigation)
 
 chrome.tabs.onRemoved.addListener(tabId => {
   chrome.storage.session.remove(`priorUrl:${tabId}`).catch(() => {})
@@ -133,13 +183,6 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       else chrome.tabs.remove(tabId).catch(() => {})
       respond({ ok: true })
     }).catch(() => respond({ ok: false }))
-    return true
-  }
-
-  if (msg?.type === 'openUrls') {
-    // ok:true means "dispatched", not "created" — the creates are fire-and-forget.
-    for (const url of msg.urls ?? []) chrome.tabs.create({ url, active: false }).catch(() => {})
-    respond({ ok: true })
     return true
   }
 
