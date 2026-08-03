@@ -21,18 +21,17 @@
   <div class="actions">
     <button class="primary" id="back">Back to work</button>
     <button id="save">Save for later</button>
+    <!--
+      An anchor wearing the button style, deliberately. It looks and sits exactly
+      like its neighbours, but being a real link it still works with no JS and
+      with the daemon down — which neither of the buttons beside it can claim.
+      It replaces this tab rather than opening another, because choosing the
+      dashboard is itself a choice not to go.
+    -->
+    <a class="button-link" href="dashboard.html">Open dashboard</a>
   </div>
 
-  <!--
-    A plain link, deliberately: it works with no JS and with the daemon down,
-    which the buttons above cannot claim. It replaces this tab rather than opening
-    another, because choosing the dashboard is itself a choice not to go.
-  -->
-  <p class="center" style="margin-top:1.25rem">
-    <a class="quiet-link" href="dashboard.html">edit your tasks on the dashboard</a>
-  </p>
-
-  <p class="center" style="margin-top:0.75rem">
+  <p class="center" style="margin-top:1.5rem">
     <button class="ghost" id="continue" disabled></button>
   </p>
 
