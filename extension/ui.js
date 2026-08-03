@@ -58,6 +58,14 @@ export function countdown({ seconds = 10, onTick, onDone, schedule = setTimeout 
 }
 
 export function renderTasks(el, tasks, { onToggle, onRemove } = {}) {
+  // Every page polls once a second. Rebuilding this list on each poll made a
+  // just-clicked checkbox snap back to the daemon's not-yet-updated value, so a
+  // click looked like it had done nothing. Only rebuild when the data actually
+  // changed, which leaves the user's click visible until the real update lands.
+  const signature = JSON.stringify((tasks ?? []).map(t => [t.id, t.text, t.done]))
+  if (el.dataset.taskSig === signature) return
+  el.dataset.taskSig = signature
+
   el.replaceChildren()
   if (!tasks || tasks.length === 0) {
     const empty = document.createElement('p')

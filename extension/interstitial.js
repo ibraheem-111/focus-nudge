@@ -1,5 +1,5 @@
 import { BUNDLED_QUOTES, pickQuote } from './quotes.js'
-import { getState, getQuotes, grace, queueAdd, isDown } from './api.js'
+import { getState, getQuotes, grace, queueAdd, task, isDown } from './api.js'
 import { clockLine, renderTasks, PHASE_LABEL, countdown } from './ui.js'
 
 const params = new URLSearchParams(location.search)
@@ -80,7 +80,15 @@ function render(view, down) {
   el.phase.textContent = PHASE_LABEL[view.phase] ?? view.phase
   el.clock.textContent = clockLine(view)
   el.clock.classList.toggle('overrun', Boolean(view.overrun))
-  renderTasks(el.tasks, view.tasks)
+  // Interactive, not decorative. A checkbox that visibly reverts on the next
+  // poll reads as broken, and ticking off something you just finished is a
+  // reasonable thing to want here.
+  renderTasks(el.tasks, view.tasks, {
+    onToggle: async id => {
+      const v = await task('toggle', { id })
+      if (!isDown(v)) render(v, false)
+    },
+  })
 }
 
 async function poll() {
