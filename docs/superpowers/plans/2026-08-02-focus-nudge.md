@@ -2902,8 +2902,7 @@ Expected: PASS, 5 tests
   "permissions": ["storage", "tabs", "webNavigation", "alarms"],
   "host_permissions": ["http://127.0.0.1/*"],
   "background": { "service_worker": "sw.js", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "focus-nudge" },
-  "chrome_url_overrides": { "newtab": "newtab.html" }
+  "action": { "default_popup": "popup.html", "default_title": "focus-nudge" }
 }
 ```
 
@@ -3641,14 +3640,14 @@ git commit -m "feat: add the pause screen"
 ### Task 14: New tab dashboard
 
 **Files:**
-- Create: `extension/newtab.html`
-- Create: `extension/newtab.js`
+- Create: `extension/dashboard.html`
+- Create: `extension/dashboard.js`
 
 **Interfaces:**
 - Consumes: `getState`, `timer`, `task`, `snooze`, `queueDrain`, `isDown` (Task 11); `clockLine`, `renderTasks`, `PHASE_LABEL` (Task 11); the `openUrls` message (Task 12).
 - Produces: the dashboard shown on every new tab — phase, countdown, block position in the cycle, micro-task list with inline add/toggle/remove, queue depth with a drain button, and phase controls.
 
-- [ ] **Step 1: Write `extension/newtab.html`**
+- [ ] **Step 1: Write `extension/dashboard.html`**
 
 ```html
 <meta charset="utf-8">
@@ -3683,10 +3682,10 @@ git commit -m "feat: add the pause screen"
     <code>systemctl --user start focus-nudge</code>.
   </p>
 </div>
-<script type="module" src="newtab.js"></script>
+<script type="module" src="dashboard.js"></script>
 ```
 
-- [ ] **Step 2: Write `extension/newtab.js`**
+- [ ] **Step 2: Write `extension/dashboard.js`**
 
 ```js
 import { getState, timer, task, queueDrain, isDown } from './api.js'
@@ -3801,7 +3800,7 @@ Expected: the saved link opens in a background tab, the queue line disappears, a
 - [ ] **Step 5: Commit**
 
 ```bash
-git add extension/newtab.html extension/newtab.js
+git add extension/dashboard.html extension/dashboard.js
 git commit -m "feat: add new tab dashboard"
 ```
 
@@ -3852,6 +3851,8 @@ git commit -m "feat: add new tab dashboard"
   <h2>Saved for later</h2>
   <p class="empty" id="queue-line"></p>
   <button class="small" id="drain" hidden>Open them now</button>
+
+  <p><button class="small" id="open-dashboard">Open dashboard</button></p>
 
   <h2>Turn nudging off for</h2>
   <div class="actions">
@@ -3942,6 +3943,12 @@ async function act(promise) {
   return isDown(v) ? null : v
 }
 
+// The dashboard is no longer the new tab page, so this is how you reach it.
+// Opening our own extension page needs no permission beyond what we already have.
+el('open-dashboard').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') })
+  window.close()
+})
 el('clear-done').addEventListener('click', async () => render(await act(task('clearDone'))))
 el('start').addEventListener('click', async () => render(await act(timer('start'))))
 el('skip').addEventListener('click', async () => render(await act(timer('skip'))))
