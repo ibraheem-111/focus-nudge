@@ -2371,9 +2371,50 @@ function printStatus(v) {
   }
 }
 
+const HELP = `focus — a pause, a quote, and your unfinished tasks before a distraction.
+
+usage: focus [command]
+
+  status                 current phase, countdown, open tasks   (also: no args)
+  start                  begin a work block, or resume a paused one
+  pause                  pause the running phase
+  skip                   advance to the next phase
+  stop                   back to idle, clears the cycle
+  break                  begin a long break, opening any saved links
+  off <duration>         stop nudging for a while: 2h, 90m, or a bare number of hours
+
+  task                   list the micro-tasks
+  task <text>            add a micro-task
+  task done <id>         tick one off (also: task toggle <id>)
+  task rm <id>           remove one
+  task clear             empty the list
+
+  sites                  list the watched domains
+  sites add <domain>     watch another domain
+  sites remove <domain>  stop watching one
+
+  queue                  list links saved for your next long break
+  queue drain            open them now and empty the queue
+
+  stats                  blocks completed, times you continued anyway
+  --help, -h, help       this text
+
+Phases never advance on their own: an expired block waits for you. Reddit and
+YouTube are nudged during work AND short breaks — a long break or an explicit
+\`focus off\` are the only windows where they open freely.
+
+The daemon holds all state. Start or check it with:
+  systemctl --user status focus-nudge
+`
+
 const [cmd, ...rest] = process.argv.slice(2)
 
 switch (cmd) {
+  case '--help':
+  case '-h':
+  case 'help':
+    console.log(HELP)
+    break
   case 'start':
     printStatus(await call('POST', '/timer', { action: 'start' }))
     break
@@ -2453,7 +2494,7 @@ switch (cmd) {
   }
   default:
     console.error(`focus: unknown command "${cmd}"`)
-    console.error('  focus [status|start|skip|pause|stop|break|off <dur>|task|sites|queue|stats]')
+    console.error('Try "focus --help".')
     process.exit(1)
 }
 ```
@@ -2911,6 +2952,14 @@ export function countdown({ seconds = 10, onTick, onDone, schedule = setTimeout 
 }
 
 export function renderTasks(el, tasks, { onToggle, onRemove } = {}) {
+  // Every page polls once a second. Rebuilding this list on each poll made a
+  // just-clicked checkbox snap back to the daemon's not-yet-updated value, so a
+  // click looked like it had done nothing. Only rebuild when the data actually
+  // changed, which leaves the user's click visible until the real update lands.
+  const signature = JSON.stringify((tasks ?? []).map(t => [t.id, t.text, t.done]))
+  if (el.dataset.taskSig === signature) return
+  el.dataset.taskSig = signature
+
   el.replaceChildren()
   if (!tasks || tasks.length === 0) {
     const empty = document.createElement('p')
@@ -3280,7 +3329,7 @@ git commit -m "feat: add service worker with navigation interception"
 
 ```js
 import { BUNDLED_QUOTES, pickQuote } from './quotes.js'
-import { getState, getQuotes, grace, queueAdd, isDown } from './api.js'
+import { getState, getQuotes, grace, queueAdd, task, isDown } from './api.js'
 import { clockLine, renderTasks, PHASE_LABEL, countdown } from './ui.js'
 
 const params = new URLSearchParams(location.search)
@@ -3361,7 +3410,15 @@ function render(view, down) {
   el.phase.textContent = PHASE_LABEL[view.phase] ?? view.phase
   el.clock.textContent = clockLine(view)
   el.clock.classList.toggle('overrun', Boolean(view.overrun))
-  renderTasks(el.tasks, view.tasks)
+  // Interactive, not decorative. A checkbox that visibly reverts on the next
+  // poll reads as broken, and ticking off something you just finished is a
+  // reasonable thing to want here.
+  renderTasks(el.tasks, view.tasks, {
+    onToggle: async id => {
+      const v = await task('toggle', { id })
+      if (!isDown(v)) render(v, false)
+    },
+  })
 }
 
 async function poll() {
