@@ -29,6 +29,7 @@ function render(view) {
   if (down) {
     el('phase').textContent = 'no daemon'
     el('clock').textContent = ''
+    el('pause').textContent = 'Pause'   // a stale "Resume" means nothing when down
     renderTasks(el('tasks'), [])
     el('queue-line').textContent = 'unknown'
     el('drain').hidden = true
@@ -92,8 +93,26 @@ el('new-site').addEventListener('keydown', async e => {
   if (e.key !== 'Enter') return
   const domain = e.target.value.trim()
   if (!domain) return
-  e.target.value = ''
-  render(await act(site('add', domain)))
+
+  // The daemon canonicalises entries and rejects anything without a dot — a bare
+  // TLD like "com" would otherwise match every domain in it. A rejection returns
+  // the state unchanged, which is indistinguishable from success unless we look.
+  // Without this the input would just clear and nothing would happen.
+  const countBefore = (latest?.sites ?? []).length
+  const v = await act(site('add', domain))
+  render(v)
+
+  const added = v && (v.sites ?? []).length > countBefore
+  if (added) {
+    e.target.value = ''
+    el('site-error').hidden = true
+  } else {
+    // Keep what they typed so it can be corrected rather than retyped.
+    el('site-error').textContent = v
+      ? `"${domain}" was not added — check it is a full domain, or it may already be listed`
+      : 'the daemon is not running, so the site list cannot be changed'
+    el('site-error').hidden = false
+  }
 })
 
 async function poll() {
