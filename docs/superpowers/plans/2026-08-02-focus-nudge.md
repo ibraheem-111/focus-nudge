@@ -2874,6 +2874,42 @@ export function clockLine(v) {
   return `${formatDuration(v.remainingMs)} left ${noun}`
 }
 
+// The pause screen's countdown lives here so it can be tested without a DOM.
+// `schedule` is injectable, which makes the whole thing deterministic in tests.
+//
+// Two properties matter and both are load-bearing:
+//   - it starts immediately, never gated on a network call, so the visible
+//     countdown begins at page load rather than after a daemon round trip
+//   - onDone always fires. A countdown that never completes would leave the
+//     escape hatch disabled forever, which is the one outcome the design forbids.
+export function countdown({ seconds = 10, onTick, onDone, schedule = setTimeout }) {
+  let left = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0
+  let finished = false
+
+  const step = () => {
+    if (finished) return
+    if (left > 0) {
+      onTick?.(left)
+      left -= 1
+      schedule(step, 1000)
+    } else {
+      finished = true
+      onDone?.()
+    }
+  }
+  step()
+
+  return {
+    // Lets a late-arriving countdownSeconds from the daemon adjust a countdown
+    // that is already running, without restarting or delaying it.
+    setSeconds(s) {
+      if (finished) return
+      if (Number.isFinite(s) && s >= 0) left = Math.floor(s)
+    },
+    get finished() { return finished },
+  }
+}
+
 export function renderTasks(el, tasks, { onToggle, onRemove } = {}) {
   el.replaceChildren()
   if (!tasks || tasks.length === 0) {
@@ -3245,7 +3281,7 @@ git commit -m "feat: add service worker with navigation interception"
 ```js
 import { BUNDLED_QUOTES, pickQuote } from './quotes.js'
 import { getState, getQuotes, grace, queueAdd, isDown } from './api.js'
-import { clockLine, renderTasks, PHASE_LABEL } from './ui.js'
+import { clockLine, renderTasks, PHASE_LABEL, countdown } from './ui.js'
 
 const params = new URLSearchParams(location.search)
 const targetUrl = params.get('url') ?? ''
@@ -3283,10 +3319,25 @@ document.title = targetHost ? `focus — ${targetHost}` : 'focus'
   el.author.textContent = q.author ? `— ${q.author}` : ''
 })()
 
+// A missing or unparsable ?url= must never leave the escape hatch dead. If we
+// cannot send the user onward, send them back instead — the one outcome this
+// design forbids is a screen with no way off it.
+const targetUsable = (() => {
+  try {
+    const u = new URL(targetUrl)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch { return false }
+})()
+
 function release() {
-  if (released || !targetUrl) return
+  if (released) return
   released = true
-  location.replace(targetUrl)
+  if (!targetUsable) return goBack()
+  try {
+    location.replace(targetUrl)
+  } catch {
+    goBack()
+  }
 }
 
 function render(view, down) {
@@ -3321,29 +3372,31 @@ async function poll() {
 poll()
 setInterval(poll, 1000)
 
-// The countdown gates the escape hatch; it never removes it.
-let secondsLeft = 10
-function tickCountdown() {
-  if (secondsLeft > 0) {
-    el.continue.textContent = `continue anyway  (${secondsLeft})`
+// The countdown gates the escape hatch; it never removes it. It starts NOW, not
+// after a daemon round trip — gating it on the network would leave the button
+// blank and silently extend the real wait by up to api.js's 1500 ms timeout.
+const clock = countdown({
+  seconds: 10,
+  onTick: n => {
+    el.continue.textContent = `continue anyway  (${n})`
     el.continue.disabled = true
-    secondsLeft--
-    setTimeout(tickCountdown, 1000)
-  } else {
+  },
+  onDone: () => {
     el.continue.textContent = 'continue anyway'
     el.continue.disabled = false
-  }
-}
+  },
+})
+
+// If the daemon specifies a different countdown, apply it to the running clock.
 getState().then(v => {
-  if (!isDown(v) && Number.isFinite(v.countdownSeconds)) secondsLeft = v.countdownSeconds
-  tickCountdown()
+  if (!isDown(v)) clock.setSeconds(v.countdownSeconds)
 })
 
 function goBack() {
   chrome.runtime.sendMessage({ type: 'goBack' }, () => {})
 }
 
-el.back.addEventListener('click', goBack)
+el.back.addEventListener('click', () => { el.back.disabled = true; goBack() })
 
 el.save.addEventListener('click', async () => {
   el.save.disabled = true
@@ -3363,6 +3416,77 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') goBack()
 })
 ```
+
+- [ ] **Step 2b: Write `test/ui.test.js` — the escape hatch must always unlock**
+
+The countdown is the one piece of this screen whose failure would trap the user,
+so it is the one piece that gets committed regression coverage. `schedule` is
+injected, so these run instantly with no timers and no DOM.
+
+```js
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { countdown, formatDuration, clockLine } from '../extension/ui.js'
+
+// Runs every scheduled step immediately, so a 10-second countdown resolves
+// synchronously instead of taking 10 seconds.
+const immediate = fn => fn()
+
+test('the countdown always reaches onDone — the escape hatch cannot stay locked', () => {
+  for (const seconds of [0, 1, 10, 3600, -5, undefined, null, NaN, 'abc', Infinity]) {
+    let done = false
+    countdown({ seconds, onDone: () => { done = true }, schedule: immediate })
+    assert.equal(done, true, `onDone did not fire for seconds=${String(seconds)}`)
+  }
+})
+
+test('the countdown ticks down once per second and then unlocks', () => {
+  const ticks = []
+  let done = false
+  countdown({ seconds: 3, onTick: n => ticks.push(n), onDone: () => { done = true }, schedule: immediate })
+  assert.deepEqual(ticks, [3, 2, 1])
+  assert.equal(done, true)
+})
+
+test('a zero countdown unlocks immediately with no tick', () => {
+  const ticks = []
+  let done = false
+  countdown({ seconds: 0, onTick: n => ticks.push(n), onDone: () => { done = true }, schedule: immediate })
+  assert.deepEqual(ticks, [])
+  assert.equal(done, true)
+})
+
+test('setSeconds adjusts a running countdown instead of restarting it', () => {
+  const ticks = []
+  const steps = []
+  // Defer the steps so the countdown is still mid-flight when we adjust it.
+  const c = countdown({ seconds: 10, onTick: n => ticks.push(n), schedule: fn => steps.push(fn) })
+  assert.deepEqual(ticks, [10], 'the first tick happens at once, not after a round trip')
+  c.setSeconds(2)
+  while (steps.length) steps.shift()()
+  assert.deepEqual(ticks, [10, 2, 1], 'it continued from the new value')
+  assert.equal(c.finished, true)
+})
+
+test('setSeconds is ignored once the countdown has finished', () => {
+  const c = countdown({ seconds: 0, schedule: immediate })
+  assert.equal(c.finished, true)
+  c.setSeconds(30)
+  assert.equal(c.finished, true, 'a late value cannot re-lock the escape hatch')
+})
+
+test('clockLine copes with a missing view and an unknown phase', () => {
+  assert.equal(clockLine(null), 'no block running')
+  assert.equal(clockLine(undefined), 'no block running')
+  assert.equal(clockLine({ remainingMs: null }), 'no block running')
+  assert.ok(clockLine({ phase: 'GARBAGE', remainingMs: 60_000 }).includes(formatDuration(60_000)))
+})
+```
+
+- [ ] **Step 2c: Run it**
+
+Run: `node --test test/ui.test.js`
+Expected: PASS, 6 tests. Then `npm test` → 111 total.
 
 - [ ] **Step 3: Reload the extension and check the screen**
 
@@ -3769,7 +3893,7 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS, 105 tests across five files, zero failures
+Expected: PASS, 111 tests across six files, zero failures
 (config 10, core 47, policy 22, server smoke 21, quotes 5)
 
 - [ ] **Step 2: Walk the whole loop and record the result**
