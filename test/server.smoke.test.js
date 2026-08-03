@@ -44,7 +44,7 @@ test('GET /state returns an idle view', async () => {
   const v = await get('/state')
   assert.equal(v.phase, 'IDLE')
   assert.equal(v.remainingMs, null)
-  assert.deepEqual(v.sites, ['reddit.com', 'youtube.com'])
+  assert.deepEqual(v.sites, ['reddit.com', 'youtube.com', 'x.com', 'instagram.com'])
 })
 
 test('every response carries permissive CORS headers for the extension', async () => {

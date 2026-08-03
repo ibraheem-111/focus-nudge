@@ -7,6 +7,14 @@ const CFG = DEFAULTS
 const T0 = 1_000_000_000_000
 const MIN = 60_000
 
+// The shipped default, spelled out so the assertions below stay exact-contents
+// checks rather than trivially agreeing with whatever DEFAULTS happens to say.
+const DEFAULT_SITES = ['reddit.com', 'youtube.com', 'x.com', 'instagram.com']
+
+test('the config default this file asserts against is the one that ships', () => {
+  assert.deepEqual(DEFAULTS.sites, DEFAULT_SITES)
+})
+
 test('initial state is idle with nothing running', () => {
   const s = initialState()
   assert.equal(s.phase, PHASE.IDLE)
@@ -90,6 +98,52 @@ test('PAUSE while idle is a no-op', () => {
   const { state } = reduce(initialState(), { type: 'PAUSE' }, T0, CFG)
   assert.equal(state.paused, false)
   assert.equal(state.phase, PHASE.IDLE)
+})
+
+test('PAUSE pauses a short break too', () => {
+  const s = { ...initialState(), phase: PHASE.SHORT_BREAK, endsAt: T0 + 5 * MIN }
+  const { state } = reduce(s, { type: 'PAUSE' }, T0 + MIN, CFG)
+  assert.equal(state.paused, true)
+  assert.equal(state.pausedRemainingMs, 4 * MIN)
+})
+
+// PAUSE used to apply to any phase with an endsAt, which included the two
+// sanctioned windows. Pausing one set endsAt to null, and settle's expiry
+// branches all require endsAt !== null — so the window never ended and nudging
+// was off permanently, across restarts. A sanctioned window is a stretch of wall
+// clock, not work: there is nothing there to pause.
+test('PAUSE while snoozed is a no-op, so the snooze can still expire', () => {
+  const snoozed = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
+  const { state, effects } = reduce(snoozed, { type: 'PAUSE' }, T0 + MIN, CFG)
+  assert.deepEqual(state, snoozed, 'the snooze is untouched')
+  assert.deepEqual(effects, [], 'and nothing is logged')
+  assert.equal(state.endsAt, T0 + 60 * MIN, 'endsAt is NOT cleared')
+
+  // The escape from the trap: expiry still fires afterwards.
+  const later = settle(state, T0 + 60 * MIN, CFG)
+  assert.equal(later.state.phase, PHASE.IDLE, 'the snooze still expires')
+  assert.equal(view(later.state, T0 + 60 * MIN, CFG).nudgingPhase, true, 'and nudging is back on')
+})
+
+test('PAUSE during a long break is a no-op, so the break can still expire', () => {
+  const onBreak = reduce(initialState(), { type: 'BREAK_LONG' }, T0, CFG).state
+  const { state, effects } = reduce(onBreak, { type: 'PAUSE' }, T0 + MIN, CFG)
+  assert.deepEqual(state, onBreak, 'the long break is untouched')
+  assert.deepEqual(effects, [])
+  assert.equal(state.endsAt, T0 + 20 * MIN, 'endsAt is NOT cleared')
+
+  const later = settle(state, T0 + 20 * MIN, CFG)
+  assert.equal(later.state.expiredNotified, true, 'the break still reaches its expiry notice')
+  assert.ok(later.effects.some(e => e.type === 'notify'))
+})
+
+test('a paused snooze cannot be resurrected as a paused WORK block by START', () => {
+  // Belt and braces on the shape: with PAUSE refusing sanctioned phases, no
+  // path can leave phase SNOOZED with paused:true and endsAt:null.
+  const snoozed = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
+  const attempted = reduce(snoozed, { type: 'PAUSE' }, T0 + MIN, CFG).state
+  assert.equal(attempted.paused, false)
+  assert.equal(attempted.pausedRemainingMs, null)
 })
 
 test('STOP returns to idle and clears the cycle', () => {
@@ -376,19 +430,20 @@ test('QUEUE_DRAIN empties the queue without changing phase', () => {
 test('sites can be added and removed, and emit a setSites effect', () => {
   const added = reduce(initialState(), { type: 'SITE_ADD', site: 'News.YCombinator.com' }, T0, CFG)
   assert.deepEqual(added.effects.find(e => e.type === 'setSites').sites,
-    ['reddit.com', 'youtube.com', 'news.ycombinator.com'], 'lowercased and appended')
+    [...DEFAULT_SITES, 'news.ycombinator.com'], 'lowercased and appended')
 
   const dupe = reduce(initialState(), { type: 'SITE_ADD', site: 'reddit.com' }, T0, CFG)
-  assert.deepEqual(dupe.effects.find(e => e.type === 'setSites').sites, ['reddit.com', 'youtube.com'])
+  assert.deepEqual(dupe.effects.find(e => e.type === 'setSites').sites, DEFAULT_SITES)
 
   const removed = reduce(initialState(), { type: 'SITE_REMOVE', site: 'reddit.com' }, T0, CFG)
-  assert.deepEqual(removed.effects.find(e => e.type === 'setSites').sites, ['youtube.com'])
+  assert.deepEqual(removed.effects.find(e => e.type === 'setSites').sites,
+    ['youtube.com', 'x.com', 'instagram.com'])
 })
 
 test('SITE_ADD strips a scheme and path if one is pasted in', () => {
   const { effects } = reduce(initialState(), { type: 'SITE_ADD', site: 'https://news.ycombinator.com/best' }, T0, CFG)
   assert.deepEqual(effects.find(e => e.type === 'setSites').sites,
-    ['reddit.com', 'youtube.com', 'news.ycombinator.com'])
+    [...DEFAULT_SITES, 'news.ycombinator.com'])
 })
 
 test('SITE_ADD canonicalises entries that would otherwise never match', () => {
@@ -410,6 +465,21 @@ test('SITE_ADD canonicalises entries that would otherwise never match', () => {
   assert.deepEqual(bare.effects, [], 'rejected outright, no setSites effect')
 })
 
+test('SITE_ADD collapses dot runs before stripping www., not after', () => {
+  // The strips used to run www.-first, so ".www.reddit.com" only had its leading
+  // dot removed and stored as "www.reddit.com" — which matchSite then fails to
+  // match against a plain reddit.com visit. Same fail-open class as the
+  // leading-dot bug above, one layer deeper.
+  const cfg = { ...CFG, sites: [] }
+  const added = site => reduce(initialState(), { type: 'SITE_ADD', site }, T0, cfg)
+    .effects.find(e => e.type === 'setSites')?.sites.at(-1)
+
+  assert.equal(added('.www.reddit.com'), 'reddit.com', 'dot then www. is still just reddit.com')
+  assert.equal(added('www..reddit.com'), 'reddit.com', 'a doubled inner dot collapses')
+  assert.equal(added('..www..reddit..com..'), 'reddit.com', 'and any pile-up of them')
+  assert.equal(added('www.reddit.com'), 'reddit.com', 'the plain case is unchanged')
+})
+
 test('view reports a running block with positive remaining time', () => {
   const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
   const v = view(s, T0 + 10 * MIN, CFG)
@@ -420,7 +490,7 @@ test('view reports a running block with positive remaining time', () => {
   assert.equal(v.blocksPerCycle, 4)
   assert.equal(v.countdownSeconds, 10)
   assert.equal(v.graceMinutes, 5)
-  assert.deepEqual(v.sites, ['reddit.com', 'youtube.com'])
+  assert.deepEqual(v.sites, DEFAULT_SITES)
   assert.equal(v.serverTime, T0 + 10 * MIN)
 })
 

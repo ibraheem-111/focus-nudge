@@ -15,7 +15,11 @@ test('DEFAULTS carry the spec values', () => {
   assert.equal(DEFAULTS.blocksPerCycle, 4)
   assert.equal(DEFAULTS.graceMinutes, 5)
   assert.equal(DEFAULTS.countdownSeconds, 10)
-  assert.deepEqual(DEFAULTS.sites, ['reddit.com', 'youtube.com'])
+  // Deliberately widened from ['reddit.com', 'youtube.com']: those two were the
+  // shipped default while the author actually watches four domains, so a lost or
+  // unreadable config.json silently stopped nudging half of them. Kept as an
+  // exact-contents assertion so the list cannot drift unnoticed again.
+  assert.deepEqual(DEFAULTS.sites, ['reddit.com', 'youtube.com', 'x.com', 'instagram.com'])
 })
 
 test('PATHS all sit under CONFIG_DIR', () => {

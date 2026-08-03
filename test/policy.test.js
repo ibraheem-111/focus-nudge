@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { matchSite, decide, NUDGE_PHASES } from '../extension/policy.js'
+import {
+  matchSite, decide, NUDGE_PHASES, FALLBACK_SITES, FALLBACK_GRACE_MINUTES,
+} from '../extension/policy.js'
 
 const SITES = ['reddit.com', 'youtube.com']
 const T0 = 1_000_000_000_000
@@ -138,4 +140,89 @@ test('a non-array site list falls back rather than watching nothing', () => {
 
 test('a trailing-dot FQDN host still matches', () => {
   assert.equal(matchSite('https://reddit.com./', ['reddit.com']), 'reddit.com')
+})
+
+// With the daemon down, POST /grace cannot be recorded, so `continue anyway`
+// used to send the user straight back into another interception — forever, with
+// the pause screen claiming it was "a plain reminder". The pass is instead
+// recorded in the extension's own session storage and honoured here, but ONLY
+// while the daemon is unreachable: whenever it answers, it is the authority.
+
+test('a session fallback pass lets the site through while the daemon is down', () => {
+  const passes = { 'reddit.com': T0 + 60_000 }
+  const d = decide({ url: 'https://reddit.com/', phase: null, graces: null, sites: SITES, now: T0, down: true, fallbackPasses: passes })
+  assert.equal(d.action, 'allow')
+  assert.equal(d.site, 'reddit.com')
+  assert.equal(d.reason, 'grace-fallback')
+})
+
+test('a fallback pass is per-site and expires on the boundary', () => {
+  const passes = { 'reddit.com': T0 }
+  const args = { phase: null, graces: null, sites: SITES, down: true, fallbackPasses: passes }
+  assert.equal(decide({ ...args, url: 'https://reddit.com/', now: T0 }).action, 'nudge', 'lapses exactly on the boundary')
+  assert.equal(decide({ ...args, url: 'https://reddit.com/', now: T0 - 1 }).action, 'allow')
+  assert.equal(decide({ ...args, url: 'https://youtube.com/', now: T0 - 1 }).action, 'nudge', 'a reddit pass does not unlock youtube')
+})
+
+test('a subdomain visit is covered by the pass held under the matched site', () => {
+  // The key is the site policy matched, not the hostname — otherwise the pass is
+  // filed where nothing will ever look it up.
+  const passes = { 'reddit.com': T0 + 60_000 }
+  assert.equal(decide({ url: 'https://old.reddit.com/r/x', phase: null, graces: null, sites: SITES, now: T0, down: true, fallbackPasses: passes }).action, 'allow')
+})
+
+test('a fallback pass is ignored whenever the daemon is reachable', () => {
+  // The daemon is the authority when it is up; a stale session pass must not
+  // outlive a real grace or survive `focus start`.
+  const passes = { 'reddit.com': T0 + 60_000 }
+  const d = decide({ url: 'https://reddit.com/', phase: 'WORK', graces: {}, sites: SITES, now: T0, down: false, fallbackPasses: passes })
+  assert.equal(d.action, 'nudge', 'a live daemon overrules the session pass')
+})
+
+test('a missing or malformed fallback pass still nudges', () => {
+  for (const passes of [null, undefined, {}, 'nope', 42, { 'reddit.com': 'soon' }, { 'reddit.com': null }]) {
+    const d = decide({ url: 'https://reddit.com/', phase: null, graces: null, sites: SITES, now: T0, down: true, fallbackPasses: passes })
+    assert.equal(d.action, 'nudge', `fallbackPasses=${JSON.stringify(passes)} must fail closed`)
+  }
+})
+
+test('down with no fallback pass at all still nudges, and still reports no-state', () => {
+  const d = decide({ url: 'https://reddit.com/', phase: null, graces: null, sites: SITES, now: T0, down: true })
+  assert.equal(d.action, 'nudge')
+  assert.equal(d.reason, 'no-state')
+})
+
+test('a fallback pass never opens an unwatched site', () => {
+  const passes = { 'example.com': T0 + 60_000 }
+  const d = decide({ url: 'https://example.com/', phase: null, graces: null, sites: SITES, now: T0, down: true, fallbackPasses: passes })
+  assert.equal(d.reason, 'no-match', 'no match means the pass is irrelevant, not a grant')
+})
+
+test('the fallback grace length is a positive number of minutes', () => {
+  // The interstitial has no daemon to ask for graceMinutes when it is down, so
+  // this shared constant is what it uses. It must not be zero, or the pass would
+  // already have lapsed by the time the navigation is re-evaluated.
+  assert.equal(typeof FALLBACK_GRACE_MINUTES, 'number')
+  assert.ok(FALLBACK_GRACE_MINUTES > 0)
+})
+
+test('FALLBACK_SITES covers every domain the default config watches', async () => {
+  // A cold service worker with an unreachable daemon decides from FALLBACK_SITES
+  // alone. Anything the shipped config watches but this list omits is allowed
+  // outright — the precise scenario fail-closed exists to prevent.
+  const { DEFAULTS } = await import('../daemon/config.js')
+  assert.deepEqual([...FALLBACK_SITES].sort(), [...DEFAULTS.sites].sort())
+  for (const s of DEFAULTS.sites) {
+    assert.equal(
+      decide({ url: `https://${s}/`, phase: 'WORK', graces: {}, sites: null, now: T0 }).action,
+      'nudge',
+      `${s} is allowed with sites:null`,
+    )
+  }
+})
+
+test('the four domains in daily use are all watched by default', () => {
+  for (const s of ['reddit.com', 'youtube.com', 'x.com', 'instagram.com']) {
+    assert.ok(FALLBACK_SITES.includes(s), `${s} missing from FALLBACK_SITES`)
+  }
 })

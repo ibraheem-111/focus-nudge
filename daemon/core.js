@@ -58,6 +58,9 @@ function minutes(ms) {
   return Math.round(ms / MIN)
 }
 
+// The phases PAUSE may touch. Deliberately narrower than "has an endsAt".
+const PAUSABLE_PHASES = new Set([PHASE.WORK, PHASE.SHORT_BREAK])
+
 export function reduce(state, action, now, config) {
   const effects = []
 
@@ -117,6 +120,14 @@ export function reduce(state, action, now, config) {
     }
 
     case 'PAUSE': {
+      // Only work counts as pausable. Pausing a sanctioned window used to be
+      // accepted — it has an endsAt, so the old `endsAt === null` guard let it
+      // through — and it cleared endsAt, which every expiry branch in settle
+      // requires. The window then never ended: nudging stayed off permanently,
+      // across restarts, from one click of the popup's Pause button. A long
+      // break or a snooze is a stretch of wall clock rather than work, so there
+      // is nothing in it to pause anyway.
+      if (!PAUSABLE_PHASES.has(state.phase)) return { state, effects }
       if (state.endsAt === null || state.paused) return { state, effects }
       effects.push({ type: 'log', event: 'pause', data: { phase: state.phase } })
       return {
@@ -338,7 +349,11 @@ function normaliseSite(raw) {
   if (!s) return ''
   s = s.replace(/^[a-z]+:\/\//, '').split('/')[0].split('?')[0]
   s = s.split('@').pop().split(':')[0]          // drop any userinfo and port
-  s = s.replace(/^www\./, '').replace(/^\.+/, '').replace(/\.+$/, '')
+  // Order matters. Collapsing and trimming the dots FIRST is what makes the
+  // www. strip see a real leading label: doing www. first left ".www.reddit.com"
+  // as "www.reddit.com", which matchSite never matches against a plain
+  // reddit.com visit — fail-open, exactly like the leading-dot bug below.
+  s = s.replace(/\.{2,}/g, '.').replace(/^\.+/, '').replace(/\.+$/, '').replace(/^www\./, '')
   // Canonicalising here is what keeps a stored entry matchable. The old
   // pattern accepted ".reddit.com", which matchSite could then never match —
   // silently unwatching the very site the user had just added.

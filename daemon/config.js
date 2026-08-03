@@ -19,7 +19,8 @@ export const DEFAULTS = {
   blocksPerCycle: 4,
   graceMinutes: 5,
   countdownSeconds: 10,
-  sites: ['reddit.com', 'youtube.com'],
+  // Kept equal to FALLBACK_SITES in extension/policy.js — see the note there.
+  sites: ['reddit.com', 'youtube.com', 'x.com', 'instagram.com'],
 }
 
 export function mergeConfig(raw) {
@@ -36,7 +37,15 @@ export function mergeConfig(raw) {
 export function loadConfig(configPath = PATHS.config) {
   try {
     return mergeConfig(JSON.parse(fs.readFileSync(configPath, 'utf8')))
-  } catch {
+  } catch (err) {
+    // A missing file is the normal first run and says nothing. Anything else —
+    // malformed json, a permissions problem — means the user's real settings are
+    // being ignored, and falling back in total silence is how you end up watching
+    // the default list without ever being told. Behaviour is unchanged: the
+    // defaults are still used, they are just no longer used quietly.
+    if (err.code !== 'ENOENT') {
+      console.error(`focus-nudge: could not read ${configPath} (${err.message}); using defaults`)
+    }
     return { ...DEFAULTS }
   }
 }
