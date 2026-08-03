@@ -2675,7 +2675,7 @@ git commit -m "feat: add systemd user unit and installer"
 - Produces:
   - `BUNDLED_QUOTES: Array<{text, author}>` and `pickQuote(bundled, user, randomFn) -> {text, author}`
   - `api.getState()`, `api.getQuotes()`, `api.timer(action)`, `api.snooze(hours)`, `api.task(action, payload)`, `api.site(action, site)`, `api.queueAdd(url, title)`, `api.queueDrain()`, `api.grace(site)`, `api.DAEMON_DOWN` — a sentinel object `{down: true}` returned instead of throwing.
-  - `formatDuration(ms) -> string`, `phaseLabel(view) -> string`, `renderTasks(el, tasks, onToggle)`
+  - `PHASE_LABEL: object`, `formatDuration(ms) -> string`, `clockLine(view) -> string`, `renderTasks(el, tasks, {onToggle, onRemove})`
 
 - [ ] **Step 1: Write the failing test**
 
