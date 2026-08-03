@@ -6,6 +6,5 @@
   "permissions": ["storage", "tabs", "webNavigation", "alarms"],
   "host_permissions": ["http://127.0.0.1/*"],
   "background": { "service_worker": "sw.js", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "focus-nudge" },
-  "chrome_url_overrides": { "newtab": "newtab.html" }
+  "action": { "default_popup": "popup.html", "default_title": "focus-nudge" }
 }

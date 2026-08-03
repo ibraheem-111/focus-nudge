@@ -28,7 +28,7 @@ test('matchSite returns null for unparseable or non-web urls', () => {
   assert.equal(matchSite('not a url', SITES), null)
   assert.equal(matchSite('', SITES), null)
   assert.equal(matchSite(undefined, SITES), null)
-  assert.equal(matchSite('chrome-extension://abc/newtab.html', SITES), null)
+  assert.equal(matchSite('chrome-extension://abc/dashboard.html', SITES), null)
 })
 
 test('the nudging phases are exactly idle, work, and short break', () => {

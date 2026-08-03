@@ -64,6 +64,12 @@ async function act(promise) {
   return isDown(v) ? null : v
 }
 
+// The dashboard is no longer the new tab page, so this is how you reach it.
+// Opening our own extension page needs no permission beyond what we already have.
+el('open-dashboard').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') })
+  window.close()
+})
 el('clear-done').addEventListener('click', async () => render(await act(task('clearDone'))))
 el('start').addEventListener('click', async () => render(await act(timer('start'))))
 el('skip').addEventListener('click', async () => render(await act(timer('skip'))))
