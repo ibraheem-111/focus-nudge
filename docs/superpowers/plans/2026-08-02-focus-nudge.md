@@ -1043,7 +1043,12 @@ test('SITE_ADD strips a scheme and path if one is pasted in', () => {
 })
 
 test('SITE_ADD canonicalises entries that would otherwise never match', () => {
-  const added = site => reduce(initialState(), { type: 'SITE_ADD', site }, T0, CFG)
+  // Reduce against an empty site list, not CFG. Against the real DEFAULTS,
+  // '.reddit.com' canonicalises to 'reddit.com', which is already present, so
+  // SITE_ADD correctly dedupes and appends nothing — and .at(-1) would then
+  // read 'youtube.com' and the assertion would be testing the wrong thing.
+  const EMPTY = { ...CFG, sites: [] }
+  const added = site => reduce(initialState(), { type: 'SITE_ADD', site }, T0, EMPTY)
     .effects.find(e => e.type === 'setSites').sites.at(-1)
 
   assert.equal(added('.reddit.com'), 'reddit.com', 'a leading dot is stripped, not stored')
@@ -1053,7 +1058,7 @@ test('SITE_ADD canonicalises entries that would otherwise never match', () => {
 
   // A bare TLD must never be storable — in the matcher it would otherwise
   // match every domain in that TLD.
-  const bare = reduce(initialState(), { type: 'SITE_ADD', site: 'com' }, T0, CFG)
+  const bare = reduce(initialState(), { type: 'SITE_ADD', site: 'com' }, T0, EMPTY)
   assert.deepEqual(bare.effects, [], 'rejected outright, no setSites effect')
 })
 ```
