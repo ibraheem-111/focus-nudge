@@ -26,13 +26,37 @@ export function parseQuotes(text) {
     })
 }
 
-export function summariseLog(text) {
-  const stats = { blocksCompleted: 0, nudgesContinued: 0, savedForLater: 0, queueDrained: 0 }
+// Local calendar day, not UTC: "blocks today" has to mean the user's today.
+// Built from the local getters rather than a locale format so it cannot drift
+// with locale settings.
+export function localDay(at) {
+  const d = new Date(at)
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// `dayKey` and `now` are injectable so the day-bucketing can be tested without
+// depending on the machine's timezone.
+export function summariseLog(text, { dayKey = localDay, now = Date.now() } = {}) {
+  const stats = {
+    blocksCompleted: 0, nudgesContinued: 0, savedForLater: 0, queueDrained: 0,
+    byDay: {}, today: 0, last7: 0,
+  }
+  const todayKey = dayKey(now)
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000
+
   for (const line of String(text).split('\n')) {
     if (!line.trim()) continue
     let entry
     try { entry = JSON.parse(line) } catch { continue }
-    if (entry.event === 'block_completed') stats.blocksCompleted++
+
+    if (entry.event === 'block_completed') {
+      stats.blocksCompleted++
+      const key = Number.isFinite(entry.at) ? dayKey(entry.at) : 'unknown'
+      stats.byDay[key] = (stats.byDay[key] ?? 0) + 1
+      if (key === todayKey) stats.today++
+      if (Number.isFinite(entry.at) && entry.at >= sevenDaysAgo) stats.last7++
+    }
     else if (entry.event === 'continued') stats.nudgesContinued++
     else if (entry.event === 'saved_for_later') stats.savedForLater++
     else if (entry.event === 'queue_drained') stats.queueDrained++

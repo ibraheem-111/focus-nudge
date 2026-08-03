@@ -107,7 +107,8 @@ usage: focus [command]
   queue                  list links saved for your next long break
   queue drain            open them now and empty the queue
 
-  stats                  blocks completed, times you continued anyway
+  stats                  blocks today, last 7 days, all time, and a daily history
+  stats <n>              show the last <n> days of history (default 14)
   --help, -h, help       this text
 
 Phases never advance on their own: an expired block waits for you. Reddit and
@@ -199,10 +200,32 @@ switch (cmd) {
   case 'stats': {
     const s = await call('GET', '/stats')
     const t = s.totals
-    console.log(`  blocks completed   ${t.blocksCompleted}`)
+    const days = Number(rest[0]) > 0 ? Math.floor(Number(rest[0])) : 14
+
+    console.log(`  today              ${t.today} block${t.today === 1 ? '' : 's'}`)
+    console.log(`  last 7 days        ${t.last7}`)
+    console.log(`  all time           ${t.blocksCompleted}`)
+    console.log()
     console.log(`  continued anyway   ${t.nudgesContinued}`)
     console.log(`  saved for later    ${t.savedForLater}`)
     console.log(`  queues drained     ${t.queueDrained}`)
+
+    const keys = Object.keys(t.byDay).filter(k => k !== 'unknown').sort().reverse().slice(0, days)
+    if (keys.length) {
+      const most = Math.max(...keys.map(k => t.byDay[k]))
+      console.log()
+      console.log(`  last ${keys.length} day${keys.length === 1 ? '' : 's'} with blocks`)
+      for (const k of keys) {
+        const n = t.byDay[k]
+        // Scale the bar to the busiest day so it stays readable in a terminal.
+        const bar = '#'.repeat(Math.max(1, Math.round((n / most) * 24)))
+        console.log(`    ${k}  ${String(n).padStart(3)}  ${bar}`)
+      }
+    }
+    if (t.byDay.unknown) {
+      console.log()
+      console.log(`  ${t.byDay.unknown} block(s) from log lines with no usable timestamp`)
+    }
     break
   }
   default:

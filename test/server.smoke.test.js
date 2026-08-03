@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createServer } from '../daemon/server.js'
+import { createServer, summariseLog, localDay } from '../daemon/server.js'
 import { DEFAULTS } from '../daemon/config.js'
 
 let base
@@ -152,6 +152,56 @@ test('GET /quotes reads the user quotes file', async () => {
 test('GET /quotes returns an empty list when the file is missing', async () => {
   fs.rmSync(path.join(tmp, 'quotes.txt'), { force: true })
   assert.deepEqual((await get('/quotes')).quotes, [])
+})
+
+test('summariseLog buckets completed blocks by local day', () => {
+  // dayKey and now are injected so this does not depend on the machine timezone.
+  const dayKey = at => `day-${at}`
+  const log = [
+    { at: 1, event: 'block_completed' },
+    { at: 1, event: 'block_completed' },
+    { at: 2, event: 'block_completed' },
+    { at: 2, event: 'continued' },
+    { at: 3, event: 'saved_for_later' },
+  ].map(e => JSON.stringify(e)).join('\n')
+
+  const t = summariseLog(log, { dayKey, now: 2 })
+  assert.equal(t.blocksCompleted, 3)
+  assert.deepEqual(t.byDay, { 'day-1': 2, 'day-2': 1 })
+  assert.equal(t.today, 1, 'now=2 makes day-2 today')
+  assert.equal(t.nudgesContinued, 1)
+  assert.equal(t.savedForLater, 1)
+})
+
+test('summariseLog counts the last seven days by timestamp, not by day key', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const now = 100 * DAY
+  const log = [
+    { at: now - 1 * DAY, event: 'block_completed' },
+    { at: now - 6 * DAY, event: 'block_completed' },
+    { at: now - 8 * DAY, event: 'block_completed' },
+  ].map(e => JSON.stringify(e)).join('\n')
+
+  const t = summariseLog(log, { now })
+  assert.equal(t.blocksCompleted, 3, 'all three are counted all-time')
+  assert.equal(t.last7, 2, 'but only two fall inside seven days')
+})
+
+test('summariseLog survives entries with no usable timestamp', () => {
+  const log = [
+    JSON.stringify({ event: 'block_completed' }),
+    JSON.stringify({ at: 'nonsense', event: 'block_completed' }),
+    '{ not json at all',
+    '',
+  ].join('\n')
+  const t = summariseLog(log, { now: 1 })
+  assert.equal(t.blocksCompleted, 2, 'malformed json skipped, timestampless still counted')
+  assert.equal(t.byDay.unknown, 2, 'bucketed separately rather than dropped or crashing')
+})
+
+test('localDay formats a local calendar date', () => {
+  const key = localDay(Date.now())
+  assert.match(key, /^\d{4}-\d{2}-\d{2}$/)
 })
 
 test('GET /stats summarises the log under a namespace', async () => {

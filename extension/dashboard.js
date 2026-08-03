@@ -1,4 +1,4 @@
-import { getState, timer, task, queueDrain, isDown } from './api.js'
+import { getState, getStats, timer, task, queueDrain, isDown } from './api.js'
 import { clockLine, renderTasks, PHASE_LABEL } from './ui.js'
 
 const el = id => document.getElementById(id)
@@ -12,6 +12,7 @@ function render(view, down) {
     el('phase').textContent = 'no daemon'
     el('clock').textContent = ''
     el('cycle').textContent = ''
+    el('today').textContent = ''
     renderTasks(el('tasks'), [])
     el('clear-done').hidden = true
     el('queue-line').hidden = true
@@ -90,6 +91,17 @@ el('drain').addEventListener('click', async () => {
   render(await refreshWith(queueDrain()), false)
 })
 
+// Today's block count comes from /stats, which reads the log. Polled every 30s
+// rather than every second so a growing log is never read on the hot path.
+async function pollStats() {
+  const s = await getStats()
+  if (isDown(s)) return
+  const n = s.totals.today
+  el('today').textContent = `${n} block${n === 1 ? '' : 's'} completed today`
+}
+
 poll()
 setInterval(poll, 1000)
+pollStats()
+setInterval(pollStats, 30_000)
 input.focus()
