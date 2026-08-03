@@ -4161,94 +4161,152 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 ### Task 16: End-to-end verification and documentation
 
 **Files:**
-- Modify: `README.md`
 - Create: `docs/VERIFICATION.md`
+- Modify: `README.md`
 
 **Interfaces:**
 - Consumes: everything above.
 - Produces: a recorded pass over the whole system, and the record kept in the repo.
 
-- [ ] **Step 1: Run the full test suite**
+This task is written after the tool went into real daily use, so it records what
+was actually verified rather than what was hoped for.
+
+- [ ] **Step 1: Run the full suite**
 
 Run: `npm test`
-Expected: PASS, 111 tests across six files, zero failures
-(config 10, core 47, policy 22, server smoke 21, quotes 5)
+Expected: PASS, 125 tests across six files, zero failures
+(config 10, core 50, policy 22, server smoke 25, quotes 5, ui 13)
 
-- [ ] **Step 2: Walk the whole loop and record the result**
+- [ ] **Step 2: Write `docs/VERIFICATION.md`**
 
-Create `docs/VERIFICATION.md` and fill in the result of each line as you go. Every line must read PASS before this task is complete.
+The table must distinguish three honest states, not two: what automated tests
+cover, what a human confirmed in a real browser, and what nobody has checked yet.
+Marking an unchecked row as passing would make the whole document worthless.
 
 ```markdown
 # Verification — focus-nudge
 
 Run after any change to the daemon, the policy, or the extension.
 
-    npm test        # unit + smoke tests
+    npm test
     systemctl --user restart focus-nudge
 
-Then reload the extension at chrome://extensions and walk this list.
+Then reload the extension at `chrome://extensions` (the reload icon on the
+focus-nudge card) and walk the browser rows below.
 
-| # | Check | Expected | Result |
-|---|---|---|---|
-| 1 | `focus status` with the daemon up | `idle` | |
-| 2 | `focus start`, then visit reddit.com | pause screen, `work block`, live clock | |
-| 3 | Add two tasks, revisit reddit.com | both tasks listed on the pause screen | |
-| 4 | Watch the `continue anyway` button | disabled for 10s, then clickable | |
-| 5 | Click `continue anyway` | reddit loads | |
-| 6 | Revisit reddit.com within 5 min | no pause screen (grace) | |
-| 7 | Visit youtube.com in the same window | pause screen appears (grace is per-site) | |
-| 8 | Wait out the 5 min, revisit reddit.com | pause screen returns | |
-| 9 | `Save for later`, then `focus queue` | the url is listed | |
-| 10 | `focus break` | saved link opens, task list cleared, sites open | |
-| 11 | During the long break, visit reddit.com | loads, no pause screen | |
-| 12 | `focus off 2h`, visit reddit.com | loads, no pause screen | |
-| 13 | Raise the pause screen, then `focus off 1h` | the screen releases itself within a second | |
-| 14 | `focus stop`, visit reddit.com while idle | pause screen appears (idle still nudges) | |
-| 15 | Stop the daemon, visit reddit.com | pause screen appears with the no-daemon hint | |
-| 16 | Visit example.com with the daemon stopped | loads normally | |
-| 17 | Restart the daemon, `focus status` | tasks and queue survived the restart | |
-| 18 | Let a work block run past its end | notification fires once, phase stays `work`, clock shows `ran over by` | |
-| 19 | Complete four blocks with `focus skip` | the fourth advance lands in `long break` | |
-| 20 | New tab | dashboard with phase, clock, tasks, cycle position | |
-| 21 | Popup: add and remove a site | reflected in `~/.config/focus-nudge/config.json` | |
-| 22 | Visit old.reddit.com and m.youtube.com | both nudged (subdomain matching) | |
-| 23 | `focus stats` | non-zero counts after the walk above | |
-| 24 | Suspend the machine across a phase end, then wake | one notification, phase held, no drift | |
+## Automated
+
+These run in `npm test` and need no browser. 125 tests.
+
+| Area | File | Covers |
+|---|---|---|
+| Config | `test/config.test.js` | defaults, path layout, partial/malformed config, atomic write, scratch-dir round trip |
+| State machine | `test/core.test.js` | every phase transition, no auto-advance, idempotent settling, per-site grace, tasks, queue, long break, `view` contract, id restart, clear-done |
+| Nudge policy | `test/policy.test.js` | registrable-domain matching, hostile lookalikes, fail-closed on unknown state, empty vs missing site list, bare-TLD and leading-dot entries |
+| Daemon | `test/server.smoke.test.js` | all endpoints over a real socket, CORS, corrupt-state recovery, restart persistence, oversized body, missing notify binary, write-failure reporting, day bucketing |
+| Quotes | `test/quotes.test.js` | bundled list size, uniqueness, selection edges |
+| Shared UI | `test/ui.test.js` | the countdown always unlocks, `setSeconds` cannot re-lock it, `renderTasks` only rebuilds on real change |
+
+## Confirmed in a real browser
+
+Verified by the operator on 2026-08-03, Chrome 150, GNOME/Wayland, extension
+loaded unpacked.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Navigation to a watched site is intercepted | PASS |
+| 2 | The redirect URL is well formed and encoded | PASS |
+| 3 | A quote renders | PASS |
+| 4 | The countdown renders live from the daemon | PASS |
+| 5 | The phase chip renders | PASS |
+| 6 | Micro-tasks added over the CLI appear on the pause screen | PASS |
+| 7 | `continue anyway` unlocks after the countdown | PASS |
+| 8 | The dark theme loads | PASS |
+| 9 | Pause-screen checkboxes toggle and persist | PASS (was broken; fixed) |
+
+## Still unverified — needs a human at a browser
+
+Nobody has checked these. Do not assume they work.
+
+| # | Check | Expected |
+|---|---|---|
+| 10 | Popup opens from the toolbar icon | phase, clock, tasks, snooze, sites, Open dashboard |
+| 11 | Open dashboard button | opens `dashboard.html` in a tab, popup closes |
+| 12 | Dashboard controls | Start / Skip / Pause / Stop / Long break drive the real daemon |
+| 13 | Dashboard task add | typing + Enter adds, and `focus status` agrees |
+| 14 | Clear done button | appears only when something is ticked, removes only those |
+| 15 | Today's block count on the dashboard | matches `focus stats` |
+| 16 | `Back to work` | returns to the previous page, or closes the tab if there was none |
+| 17 | `Save for later` | url appears in `focus queue` |
+| 18 | Long break drains the queue | saved links open exactly ONCE, not twice |
+| 19 | Grace period | after `continue anyway`, that site opens freely for 5 min |
+| 20 | Grace is per-site | a pass on one watched site does not unlock another |
+| 21 | Grace lapses | after 5 min the pause screen returns |
+| 22 | Snooze from the popup | chip reads `snoozed`, watched sites open freely |
+| 23 | Site editor add/remove | reflected in `~/.config/focus-nudge/config.json` |
+| 24 | Invalid site (`com`) | shows the error, keeps what you typed |
+| 25 | Short break still nudges | a watched site is paused during a 5-min break |
+| 26 | Daemon stopped | pause screen still appears, with the no-daemon hint |
+| 27 | Unwatched site with daemon stopped | loads normally |
+| 28 | Overrun | a finished block notifies once, holds its phase, shows `ran over by` |
+| 29 | Suspend across a phase boundary | one notification on wake, no drift |
+| 30 | Flash of content | note how often a frame of the blocked page appears (known limitation) |
 ```
 
-- [ ] **Step 3: Append the verification pointer to `README.md`**
+- [ ] **Step 3: Add the architecture and limitations sections to `README.md`**
 
 ```markdown
-## Verifying a change
-
-See `docs/VERIFICATION.md` for the manual walk-through. Run `npm test` first —
-the state machine and the nudge policy are both covered by unit tests, so most
-regressions surface there.
-
 ## How it fits together
 
-- `daemon/core.js` — the pure state machine. All phase, grace, task, and queue
-  rules live here, with no I/O and an injected clock.
-- `daemon/server.js` — HTTP on 127.0.0.1:7373, atomic persistence,
-  `notify-send`, and the append-only log.
+    focus CLI  ──POST──►  ┌───────────────────────┐
+                          │  daemon 127.0.0.1:7373 │
+    popup      ──POST──►  │  owns ~/.config/       │
+                          │    focus-nudge/        │
+    extension  ◄──poll──  └───────────────────────┘
+
+- `daemon/core.js` — the pure state machine. Every phase, grace, task and queue
+  rule lives here, with no I/O and an injected clock, which is why it can be
+  tested exhaustively.
+- `daemon/server.js` — the only component that performs I/O: HTTP on
+  127.0.0.1:7373, atomic persistence, `notify-send`, and the append-only log.
 - `extension/policy.js` — the pure allow-or-nudge decision.
 - `extension/sw.js` — polls the daemon and intercepts navigation.
-- `cli/focus` and the popup are both thin clients of the daemon, so they cannot
-  disagree about the current state.
+- `cli/focus`, `extension/popup.*`, `extension/dashboard.*` — thin clients. They
+  hold no state, so they cannot disagree about the current phase.
 
-If the daemon is unreachable, the extension keeps nudging with its bundled
-quotes. Failing closed means a crashed daemon can never quietly hand over
-Reddit.
+If the daemon is unreachable the extension keeps nudging with its bundled quotes.
+Failing closed means a crashed daemon can never quietly hand over Reddit.
+
+## Known limitations
+
+- **A frame of the blocked page can appear** before the redirect lands — worst
+  case around 1.5s on a cold daemon fetch. MV3 removed blocking `webRequest`, so
+  avoiding this entirely would need the `declarativeNetRequest` permission and a
+  different design.
+- **No public-suffix awareness.** Adding `co.uk` would match every `*.co.uk`
+  domain. A public-suffix list would break the zero-dependency rule.
+- **Firefox is not covered.** Chrome only, by choice.
+- **The extension is loaded unpacked**, so it is a couple of clicks from being
+  disabled. A managed-policy install would make it harder to defeat on impulse.
+- **`log.jsonl` grows without bound.** At roughly one block per 25 minutes this
+  is a few kilobytes a day, but nothing rotates it. `focus stats` reads it whole.
+- **Blocks are counted per day, not per task.** Attributing a block to a task
+  would mean either naming a task when you start one, or crediting every open
+  task and inflating the numbers.
+
+## Verifying a change
+
+See `docs/VERIFICATION.md`. Run `npm test` first — the state machine and the
+nudge policy are both covered there, so most regressions surface without a
+browser.
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add README.md docs/VERIFICATION.md
-git commit -m "docs: add end-to-end verification checklist"
+git commit -m "docs: record what is verified, and what is not"
 ```
-
----
 
 ## Self-Review
 
