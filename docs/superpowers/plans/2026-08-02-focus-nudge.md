@@ -1595,7 +1595,7 @@ git commit -m "feat: add pure nudge policy with domain matching"
 - Test: `test/server.smoke.test.js`
 
 **Interfaces:**
-- Consumes: `loadConfig`, `saveConfig`, `writeAtomic`, `PATHS`, `CONFIG_DIR` (Task 1); `initialState`, `reduce`, `settle`, `view` (Tasks 2–6).
+- Consumes: `loadConfig`, `mergeConfig`, `writeAtomic`, `PATHS` (Task 1); `initialState`, `reduce`, `settle`, `view` (Tasks 2–6). It deliberately does **not** use `saveConfig` — config writes go through `writeAtomic` against the injected `configPath` so the smoke test can redirect them.
 - Produces: `createServer({config, statePath, logPath, quotesPath, notify, openUrls}) -> {server, dispatch, listen}` — the injectable factory the smoke test drives on an ephemeral port. `daemon/server.js` run directly starts it on `config.port`.
 - Endpoints: `GET /state`, `GET /quotes`, `GET /stats`, `POST /timer`, `POST /snooze`, `POST /tasks`, `POST /sites`, `POST /queue`, `POST /grace`. Every response is JSON; every mutating response returns the fresh `view` so clients need no second round trip.
 
@@ -1826,7 +1826,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { loadConfig, saveConfig, writeAtomic, PATHS, CONFIG_DIR, mergeConfig } from './config.js'
+import { loadConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
 import { initialState, reduce, settle, view } from './core.js'
 
 const TIMER_ACTIONS = {
@@ -2053,27 +2053,61 @@ export function createServer(opts = {}) {
   }
 }
 
+// Rejecting alone does not stop an oversized body: the socket keeps buffering.
+// And without a `close` handler a client that drops mid-body leaves this promise
+// pending forever, wedging the request handler.
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = ''
-    req.on('data', chunk => {
+    let settled = false
+
+    const cleanup = () => {
+      req.removeListener('data', onData)
+      req.removeListener('end', onEnd)
+      req.removeListener('error', onError)
+      req.removeListener('close', onClose)
+    }
+    const finish = (fn, arg) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      fn(arg)
+    }
+    const onData = chunk => {
       data += chunk
-      if (data.length > 1e6) reject(new Error('body too large'))
-    })
-    req.on('end', () => resolve(data))
-    req.on('error', reject)
+      if (data.length > 1e6) {
+        req.destroy()
+        finish(reject, new Error('body too large'))
+      }
+    }
+    const onEnd = () => finish(resolve, data)
+    const onError = err => finish(reject, err)
+    const onClose = () => finish(reject, new Error('request closed before body was fully read'))
+
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onError)
+    req.on('close', onClose)
   })
 }
 
-let notifyWarned = false
+let warnedCommands = new Set()
+function warnOnce(cmd, message) {
+  if (warnedCommands.has(cmd)) return
+  warnedCommands.add(cmd)
+  console.error(`focus-nudge: could not run ${cmd}: ${message}`)
+}
+
+// A missing binary is reported asynchronously via the child's 'error' event, not
+// as a synchronous throw — and an unhandled 'error' on a ChildProcess is fatal.
+// Without this handler, a machine without notify-send would kill the daemon.
 function spawnDetached(cmd, args) {
   try {
-    spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref()
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
+    child.on('error', err => warnOnce(cmd, err.message))
+    child.unref()
   } catch (err) {
-    if (!notifyWarned) {
-      console.error(`focus-nudge: could not run ${cmd}: ${err.message}`)
-      notifyWarned = true
-    }
+    warnOnce(cmd, err.message)
   }
 }
 
