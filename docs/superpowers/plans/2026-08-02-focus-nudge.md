@@ -1760,11 +1760,109 @@ test('GET /quotes returns an empty list when the file is missing', async () => {
   assert.deepEqual((await get('/quotes')).quotes, [])
 })
 
-test('GET /stats summarises the log', async () => {
+test('GET /stats summarises the log under a namespace', async () => {
   const s = await get('/stats')
-  assert.equal(typeof s.blocksCompleted, 'number')
-  assert.equal(typeof s.nudgesContinued, 'number')
-  assert.equal(typeof s.savedForLater, 'number')
+  assert.equal(typeof s.totals.blocksCompleted, 'number')
+  assert.equal(typeof s.totals.nudgesContinued, 'number')
+  assert.equal(typeof s.totals.savedForLater, 'number')
+  assert.equal(typeof s.phase, 'string', 'the current view is still there alongside')
+})
+
+test('the lifetime block total is not shadowed by the current-cycle counter', async () => {
+  // Both objects carry a `blocksCompleted`. Flattened together, one silently
+  // wins: 7 completed blocks in the log were reported as 0.
+  fs.appendFileSync(path.join(tmp, 'log.jsonl'),
+    Array.from({ length: 7 }, () => JSON.stringify({ at: 1, event: 'block_completed' })).join('\n') + '\n')
+  const s = await get('/stats')
+  assert.ok(s.totals.blocksCompleted >= 7, `lifetime total survived, got ${s.totals.blocksCompleted}`)
+  assert.notEqual(s.totals, s.blocksCompleted, 'the two live at different keys')
+})
+
+test('an oversized body is rejected and the daemon survives it', async () => {
+  // readBody must destroy the socket rather than buffer without limit.
+  let status = null
+  try {
+    const res = await fetch(base + '/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'x'.repeat(2_000_000),
+    })
+    status = res.status
+  } catch {
+    status = 'connection destroyed'
+  }
+  assert.ok(status, `got ${status}`)
+  const after = await get('/state')
+  assert.equal(after.phase, 'IDLE', 'the daemon is still answering after the oversized request')
+})
+
+test('a missing notify binary does not kill the daemon', async () => {
+  // spawn reports a missing binary through the child's async 'error' event, and
+  // an unhandled 'error' on a ChildProcess is fatal. This uses the DEFAULT
+  // notify path (no injected hook) with PATH emptied, so notify-send cannot be
+  // found — the exact situation on a machine without libnotify installed.
+  const realPath = process.env.PATH
+  process.env.PATH = path.join(tmp, 'no-binaries-here')
+  const solo = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath: path.join(tmp, 'notify-state.json'),
+    logPath: path.join(tmp, 'notify-log.jsonl'),
+    quotesPath: path.join(tmp, 'quotes.txt'),
+    configPath: path.join(tmp, 'notify-config.json'),
+    openUrls: () => {},
+    // notify deliberately omitted so desktopNotify/spawnDetached is exercised
+  })
+  try {
+    const p = await solo.listen(0)
+    const started = await (await fetch(`http://127.0.0.1:${p}/timer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start' }),
+    })).json()
+    assert.equal(started.phase, 'WORK')
+    await new Promise(r => setTimeout(r, 300))
+    const still = await (await fetch(`http://127.0.0.1:${p}/state`)).json()
+    assert.equal(still.phase, 'WORK', 'daemon still alive after the failed spawn')
+  } finally {
+    process.env.PATH = realPath
+    solo.close()
+  }
+})
+
+test('a write failure reports persisted:false instead of claiming success', async t => {
+  // A full or read-only disk must not take the daemon down, but the client must
+  // not be told "saved" either, or a restart silently loses the task list.
+  if (process.getuid && process.getuid() === 0) return t.skip('root ignores directory permissions')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-ro-'))
+  const solo = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath: path.join(dir, 'state.json'),
+    logPath: path.join(dir, 'log.jsonl'),
+    quotesPath: path.join(dir, 'quotes.txt'),
+    configPath: path.join(dir, 'config.json'),
+    notify: () => {},
+    openUrls: () => {},
+  })
+  try {
+    const p = await solo.listen(0)
+    const ok = await (await fetch(`http://127.0.0.1:${p}/tasks`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'add', text: 'before' }),
+    })).json()
+    assert.equal(ok.persisted, true, 'a healthy write reports true')
+
+    fs.chmodSync(dir, 0o500)
+    const failed = await (await fetch(`http://127.0.0.1:${p}/tasks`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'add', text: 'after' }),
+    })).json()
+    assert.equal(failed.persisted, false, 'an unwritable directory reports false')
+    assert.equal(failed.tasks.length, 2, 'the action still applied in memory')
+  } finally {
+    fs.chmodSync(dir, 0o700)
+    solo.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('a corrupt state file is replaced with defaults rather than crashing', async () => {
@@ -1891,12 +1989,20 @@ export function createServer(opts = {}) {
     }
   }
 
+  // Tracks whether the last write reached disk. A full or read-only disk must
+  // not take the daemon down, but the client must not be told "saved" either —
+  // otherwise a restart silently loses the task list.
+  let persistOk = true
+
   function persist() {
     try {
       writeAtomic(paths.state, JSON.stringify(state, null, 2))
+      persistOk = true
     } catch (err) {
+      persistOk = false
       console.error('focus-nudge: could not write state:', err.message)
     }
+    return persistOk
   }
 
   function runEffects(effects) {
@@ -1938,12 +2044,12 @@ export function createServer(opts = {}) {
     state = result.state
     runEffects(result.effects)
     persist()
-    return view(state, now, config)
+    return { ...view(state, now, config), persisted: persistOk }
   }
 
   function currentView(now = Date.now()) {
     tick(now)
-    return view(state, now, config)
+    return { ...view(state, now, config), persisted: persistOk }
   }
 
   const server = http.createServer(async (req, res) => {
@@ -1981,7 +2087,11 @@ export function createServer(opts = {}) {
         if (route === '/stats') {
           let text = ''
           try { text = fs.readFileSync(paths.log, 'utf8') } catch {}
-          return send(200, { ...summariseLog(text), ...currentView() })
+          // Namespaced deliberately. `blocksCompleted` exists in BOTH the log
+          // summary (lifetime total) and the view (current-cycle counter), so
+          // spreading them into one flat object silently shadows whichever
+          // comes first — reporting ~0 blocks no matter the real history.
+          return send(200, { ...currentView(), totals: summariseLog(text) })
         }
         return send(404, { error: 'not found' })
       }
@@ -2140,12 +2250,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/server.smoke.test.js`
-Expected: PASS, 17 tests
+Expected: PASS, 21 tests
 
 - [ ] **Step 5: Run the whole suite and start the daemon by hand**
 
 Run: `npm test`
-Expected: PASS, 96 tests
+Expected: PASS, 100 tests
 
 Run: `node daemon/server.js &` then `curl -s localhost:7373/state | head -c 200` then `kill %1`
 Expected: JSON with `"phase":"IDLE"`
@@ -2248,6 +2358,11 @@ function printStatus(v) {
     console.log()
     console.log(`  ${v.queueDepth} link${v.queueDepth === 1 ? '' : 's'} saved for your next long break`)
   }
+  if (v.persisted === false) {
+    console.log()
+    console.log('  ! state is not reaching disk — changes will be lost on restart')
+    console.log('    check: systemctl --user status focus-nudge')
+  }
 }
 
 const [cmd, ...rest] = process.argv.slice(2)
@@ -2323,10 +2438,11 @@ switch (cmd) {
   }
   case 'stats': {
     const s = await call('GET', '/stats')
-    console.log(`  blocks completed   ${s.blocksCompleted}`)
-    console.log(`  continued anyway   ${s.nudgesContinued}`)
-    console.log(`  saved for later    ${s.savedForLater}`)
-    console.log(`  queues drained     ${s.queueDrained}`)
+    const t = s.totals
+    console.log(`  blocks completed   ${t.blocksCompleted}`)
+    console.log(`  continued anyway   ${t.nudgesContinued}`)
+    console.log(`  saved for later    ${t.savedForLater}`)
+    console.log(`  queues drained     ${t.queueDrained}`)
     break
   }
   default:
@@ -3585,8 +3701,8 @@ git commit -m "feat: add toolbar popup with snooze and site editing"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `npm test`
-Expected: PASS, 101 tests across five files, zero failures
-(config 10, core 47, policy 22, server smoke 17, quotes 5)
+Expected: PASS, 105 tests across five files, zero failures
+(config 10, core 47, policy 22, server smoke 21, quotes 5)
 
 - [ ] **Step 2: Walk the whole loop and record the result**
 
