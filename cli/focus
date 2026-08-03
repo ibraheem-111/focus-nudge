@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { loadConfig } from '../daemon/config.js'
+import path from 'node:path'
+import { loadConfig, CONFIG_DIR, PATHS } from '../daemon/config.js'
+import { runDoctor } from './doctor.js'
 
 const config = loadConfig()
 const BASE = `http://127.0.0.1:${config.port}`
@@ -120,6 +122,7 @@ usage: focus [command]
 
   stats                  blocks today, last 7 days, all time, and a daily history
   stats <n>              show the last <n> days of history (default 14)
+  doctor                 diagnose a machine where the daemon or unit isn't working
   --help, -h, help       this text
 
 Phases never advance on their own: an expired block waits for you. Watched sites
@@ -262,6 +265,18 @@ switch (cmd) {
       console.log()
       console.log(`  ${t.byDay.unknown} block(s) from log lines with no usable timestamp`)
     }
+    break
+  }
+  case 'doctor': {
+    const code = await runDoctor({
+      config,
+      repoRoot: path.join(import.meta.dirname, '..'),
+      paths: {
+        dir: CONFIG_DIR,
+        files: { 'config.json': PATHS.config, 'quotes.txt': PATHS.quotes, 'state.json': PATHS.state, 'log.jsonl': PATHS.log },
+      },
+    })
+    if (code !== 0) process.exit(code)
     break
   }
   default:
