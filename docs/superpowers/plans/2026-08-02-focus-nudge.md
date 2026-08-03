@@ -2521,18 +2521,28 @@ git commit -m "feat: add focus cli"
 Description=focus-nudge daemon
 Documentation=https://github.com/ibraheem/focus-nudge
 After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
 ExecStart=__NODE__ __REPO__/daemon/server.js
 Restart=on-failure
 RestartSec=2
-# notify-send and xdg-open need the session bus.
-Environment=DISPLAY=:0
+# No Environment= lines for DISPLAY/WAYLAND_DISPLAY/DBUS_SESSION_BUS_ADDRESS:
+# the systemd --user manager already exports all three into every unit's
+# environment on this machine (verified by reading /proc/<pid>/environ of the
+# running unit). notify-send needs DBUS_SESSION_BUS_ADDRESS, which is
+# inherited; xdg-open (used when the saved-links queue drains) needs
+# DISPLAY/WAYLAND_DISPLAY, also inherited. A hardcoded Environment=DISPLAY=:0
+# would be an X11-only assumption on a Wayland session and adds nothing.
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 ```
+
+Tying the unit to `graphical-session.target` rather than `default.target` makes its
+lifecycle follow the desktop session, which is correct for a daemon whose whole
+job is to talk to a running desktop.
 
 - [ ] **Step 2: Write `install.sh`**
 
