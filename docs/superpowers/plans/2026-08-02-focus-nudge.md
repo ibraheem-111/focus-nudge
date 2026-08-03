@@ -1665,7 +1665,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createServer } from '../daemon/server.js'
+import { createServer, summariseLog, localDay } from '../daemon/server.js'
 import { DEFAULTS } from '../daemon/config.js'
 
 let base
@@ -1814,6 +1814,56 @@ test('GET /quotes reads the user quotes file', async () => {
 test('GET /quotes returns an empty list when the file is missing', async () => {
   fs.rmSync(path.join(tmp, 'quotes.txt'), { force: true })
   assert.deepEqual((await get('/quotes')).quotes, [])
+})
+
+test('summariseLog buckets completed blocks by local day', () => {
+  // dayKey and now are injected so this does not depend on the machine timezone.
+  const dayKey = at => `day-${at}`
+  const log = [
+    { at: 1, event: 'block_completed' },
+    { at: 1, event: 'block_completed' },
+    { at: 2, event: 'block_completed' },
+    { at: 2, event: 'continued' },
+    { at: 3, event: 'saved_for_later' },
+  ].map(e => JSON.stringify(e)).join('\n')
+
+  const t = summariseLog(log, { dayKey, now: 2 })
+  assert.equal(t.blocksCompleted, 3)
+  assert.deepEqual(t.byDay, { 'day-1': 2, 'day-2': 1 })
+  assert.equal(t.today, 1, 'now=2 makes day-2 today')
+  assert.equal(t.nudgesContinued, 1)
+  assert.equal(t.savedForLater, 1)
+})
+
+test('summariseLog counts the last seven days by timestamp, not by day key', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const now = 100 * DAY
+  const log = [
+    { at: now - 1 * DAY, event: 'block_completed' },
+    { at: now - 6 * DAY, event: 'block_completed' },
+    { at: now - 8 * DAY, event: 'block_completed' },
+  ].map(e => JSON.stringify(e)).join('\n')
+
+  const t = summariseLog(log, { now })
+  assert.equal(t.blocksCompleted, 3, 'all three are counted all-time')
+  assert.equal(t.last7, 2, 'but only two fall inside seven days')
+})
+
+test('summariseLog survives entries with no usable timestamp', () => {
+  const log = [
+    JSON.stringify({ event: 'block_completed' }),
+    JSON.stringify({ at: 'nonsense', event: 'block_completed' }),
+    '{ not json at all',
+    '',
+  ].join('\n')
+  const t = summariseLog(log, { now: 1 })
+  assert.equal(t.blocksCompleted, 2, 'malformed json skipped, timestampless still counted')
+  assert.equal(t.byDay.unknown, 2, 'bucketed separately rather than dropped or crashing')
+})
+
+test('localDay formats a local calendar date', () => {
+  const key = localDay(Date.now())
+  assert.match(key, /^\d{4}-\d{2}-\d{2}$/)
 })
 
 test('GET /stats summarises the log under a namespace', async () => {
@@ -2010,13 +2060,37 @@ export function parseQuotes(text) {
     })
 }
 
-export function summariseLog(text) {
-  const stats = { blocksCompleted: 0, nudgesContinued: 0, savedForLater: 0, queueDrained: 0 }
+// Local calendar day, not UTC: "blocks today" has to mean the user's today.
+// Built from the local getters rather than a locale format so it cannot drift
+// with locale settings.
+export function localDay(at) {
+  const d = new Date(at)
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// `dayKey` and `now` are injectable so the day-bucketing can be tested without
+// depending on the machine's timezone.
+export function summariseLog(text, { dayKey = localDay, now = Date.now() } = {}) {
+  const stats = {
+    blocksCompleted: 0, nudgesContinued: 0, savedForLater: 0, queueDrained: 0,
+    byDay: {}, today: 0, last7: 0,
+  }
+  const todayKey = dayKey(now)
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000
+
   for (const line of String(text).split('\n')) {
     if (!line.trim()) continue
     let entry
     try { entry = JSON.parse(line) } catch { continue }
-    if (entry.event === 'block_completed') stats.blocksCompleted++
+
+    if (entry.event === 'block_completed') {
+      stats.blocksCompleted++
+      const key = Number.isFinite(entry.at) ? dayKey(entry.at) : 'unknown'
+      stats.byDay[key] = (stats.byDay[key] ?? 0) + 1
+      if (key === todayKey) stats.today++
+      if (Number.isFinite(entry.at) && entry.at >= sevenDaysAgo) stats.last7++
+    }
     else if (entry.event === 'continued') stats.nudgesContinued++
     else if (entry.event === 'saved_for_later') stats.savedForLater++
     else if (entry.event === 'queue_drained') stats.queueDrained++
@@ -2453,7 +2527,8 @@ usage: focus [command]
   queue                  list links saved for your next long break
   queue drain            open them now and empty the queue
 
-  stats                  blocks completed, times you continued anyway
+  stats                  blocks today, last 7 days, all time, and a daily history
+  stats <n>              show the last <n> days of history (default 14)
   --help, -h, help       this text
 
 Phases never advance on their own: an expired block waits for you. Reddit and
@@ -2545,10 +2620,32 @@ switch (cmd) {
   case 'stats': {
     const s = await call('GET', '/stats')
     const t = s.totals
-    console.log(`  blocks completed   ${t.blocksCompleted}`)
+    const days = Number(rest[0]) > 0 ? Math.floor(Number(rest[0])) : 14
+
+    console.log(`  today              ${t.today} block${t.today === 1 ? '' : 's'}`)
+    console.log(`  last 7 days        ${t.last7}`)
+    console.log(`  all time           ${t.blocksCompleted}`)
+    console.log()
     console.log(`  continued anyway   ${t.nudgesContinued}`)
     console.log(`  saved for later    ${t.savedForLater}`)
     console.log(`  queues drained     ${t.queueDrained}`)
+
+    const keys = Object.keys(t.byDay).filter(k => k !== 'unknown').sort().reverse().slice(0, days)
+    if (keys.length) {
+      const most = Math.max(...keys.map(k => t.byDay[k]))
+      console.log()
+      console.log(`  last ${keys.length} day${keys.length === 1 ? '' : 's'} with blocks`)
+      for (const k of keys) {
+        const n = t.byDay[k]
+        // Scale the bar to the busiest day so it stays readable in a terminal.
+        const bar = '#'.repeat(Math.max(1, Math.round((n / most) * 24)))
+        console.log(`    ${k}  ${String(n).padStart(3)}  ${bar}`)
+      }
+    }
+    if (t.byDay.unknown) {
+      console.log()
+      console.log(`  ${t.byDay.unknown} block(s) from log lines with no usable timestamp`)
+    }
     break
   }
   default:
@@ -3659,6 +3756,7 @@ git commit -m "feat: add the pause screen"
     <span class="clock" id="clock"></span>
   </div>
   <p class="empty" id="cycle"></p>
+  <p class="empty" id="today"></p>
 
   <hr>
 
@@ -3688,7 +3786,7 @@ git commit -m "feat: add the pause screen"
 - [ ] **Step 2: Write `extension/dashboard.js`**
 
 ```js
-import { getState, timer, task, queueDrain, isDown } from './api.js'
+import { getState, getStats, timer, task, queueDrain, isDown } from './api.js'
 import { clockLine, renderTasks, PHASE_LABEL } from './ui.js'
 
 const el = id => document.getElementById(id)
@@ -3702,6 +3800,7 @@ function render(view, down) {
     el('phase').textContent = 'no daemon'
     el('clock').textContent = ''
     el('cycle').textContent = ''
+    el('today').textContent = ''
     renderTasks(el('tasks'), [])
     el('clear-done').hidden = true
     el('queue-line').hidden = true
@@ -3780,8 +3879,19 @@ el('drain').addEventListener('click', async () => {
   render(await refreshWith(queueDrain()), false)
 })
 
+// Today's block count comes from /stats, which reads the log. Polled every 30s
+// rather than every second so a growing log is never read on the hot path.
+async function pollStats() {
+  const s = await getStats()
+  if (isDown(s)) return
+  const n = s.totals.today
+  el('today').textContent = `${n} block${n === 1 ? '' : 's'} completed today`
+}
+
 poll()
 setInterval(poll, 1000)
+pollStats()
+setInterval(pollStats, 30_000)
 input.focus()
 ```
 
