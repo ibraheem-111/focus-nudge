@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createServer, summariseLog, localDay, originAllowed } from '../daemon/server.js'
+import { createServer, summariseLog, localDay, originAllowed, buildNotifySendArgs } from '../daemon/server.js'
 import { DEFAULTS } from '../daemon/config.js'
 
 let base
@@ -20,7 +20,7 @@ before(async () => {
     logPath: path.join(tmp, 'log.jsonl'),
     quotesPath: path.join(tmp, 'quotes.txt'),
     configPath: path.join(tmp, 'config.json'),
-    notify: (title, body) => notified.push({ title, body }),
+    notify: (title, body, sound) => notified.push({ title, body, sound }),
     openUrls: urls => opened.push(...urls),
   })
   const port = await handle.listen(0)
@@ -603,6 +603,54 @@ test('finishing a work block writes block_completed to the log and shows in /sta
     assert.equal(still.totals.blocksCompleted, 1, 'leaving a break did not inflate the count')
   } finally {
     solo.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// buildNotifySendArgs is the pure piece of desktopNotify: it decides the
+// notify-send argv, so the --hint syntax can be checked without spawning a
+// real process or depending on notify-send being installed in CI.
+test('buildNotifySendArgs adds a sound-name hint only when a sound is given', () => {
+  const withSound = buildNotifySendArgs('title', 'body', 'alarm-clock-elapsed')
+  assert.ok(withSound.includes('--hint=string:sound-name:alarm-clock-elapsed'))
+  assert.deepEqual(withSound.slice(-2), ['title', 'body'], 'title/body stay the trailing positional args')
+
+  const withoutSound = buildNotifySendArgs('title', 'body', undefined)
+  assert.ok(!withoutSound.some(a => a.startsWith('--hint=string:sound-name:')))
+  assert.deepEqual(withoutSound.slice(-2), ['title', 'body'])
+})
+
+// The server's `dispatch`/`currentView` accept an injectable `now`, exactly so
+// a phase expiry can be forced in a test without waiting 25 real minutes or
+// starting the 1-second tick interval. This exercises the actual wiring:
+// settle's notify effect -> runEffects -> the injected notify hook, sound
+// included, with no HTTP layer in between.
+test('the notify hook receives the configured sound for a real phase expiry', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-sound-'))
+  const notifies = []
+  const T0 = Date.now()
+  const MIN = 60_000
+  const solo = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath: path.join(dir, 'state.json'),
+    logPath: path.join(dir, 'log.jsonl'),
+    quotesPath: path.join(dir, 'quotes.txt'),
+    configPath: path.join(dir, 'config.json'),
+    notify: (title, body, sound) => notifies.push({ title, body, sound }),
+    openUrls: () => {},
+  })
+  try {
+    solo.dispatch({ type: 'START' }, T0)
+    solo.currentView(T0 + 25 * MIN + 1)   // crosses the boundary -> settle expires it
+    const expiry = notifies.find(n => /finished/.test(n.title))
+    assert.ok(expiry, `expected an expiry notify, got ${JSON.stringify(notifies)}`)
+    assert.equal(expiry.sound, DEFAULTS.sounds.workEnd)
+
+    // The START notify just before it must have carried no sound at all.
+    const started = notifies.find(n => /started/.test(n.title))
+    assert.ok(started)
+    assert.equal(started.sound, undefined, 'START stays silent even through the real server wiring')
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })

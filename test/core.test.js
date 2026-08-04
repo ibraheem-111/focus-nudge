@@ -333,6 +333,71 @@ test('settle is a no-op while idle', () => {
   assert.deepEqual(effects, [])
 })
 
+// Sound is only for a boundary the user is not watching: a phase expiring on its
+// own, on a timer, while they are very likely looking away. It is data, same as
+// title/body — core.js stays pure, it just picks which name from config.
+test('a WORK expiry carries sounds.workEnd', () => {
+  const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const { effects } = settle(s, T0 + 25 * MIN, CFG)
+  const notify = effects.find(e => e.type === 'notify')
+  assert.equal(notify.sound, CFG.sounds.workEnd)
+})
+
+test('a SHORT_BREAK expiry carries sounds.breakEnd', () => {
+  const s = { ...initialState(), phase: PHASE.SHORT_BREAK, endsAt: T0 + 5 * MIN }
+  const { effects } = settle(s, T0 + 5 * MIN, CFG)
+  const notify = effects.find(e => e.type === 'notify')
+  assert.equal(notify.sound, CFG.sounds.breakEnd)
+})
+
+test('a LONG_BREAK expiry carries sounds.breakEnd', () => {
+  const s = { ...initialState(), phase: PHASE.LONG_BREAK, endsAt: T0 + 20 * MIN }
+  const { effects } = settle(s, T0 + 20 * MIN, CFG)
+  const notify = effects.find(e => e.type === 'notify')
+  assert.equal(notify.sound, CFG.sounds.breakEnd)
+})
+
+test('sounds.enabled false emits the expiry notify with no sound field at all', () => {
+  const cfg = { ...CFG, sounds: { ...CFG.sounds, enabled: false } }
+  const s = reduce(initialState(), { type: 'START' }, T0, cfg).state
+  const { effects } = settle(s, T0 + 25 * MIN, cfg)
+  const notify = effects.find(e => e.type === 'notify')
+  assert.equal('sound' in notify, false, 'the key must be absent, not merely undefined-valued')
+})
+
+// The one most likely to be broken by a later change: a click at the keyboard
+// must never beep, in either direction of a bad edit.
+test('user-initiated transitions (START, ADVANCE, SNOOZE, BREAK_LONG) never carry a sound', () => {
+  const start = reduce(initialState(), { type: 'START' }, T0, CFG)
+  for (const e of start.effects) {
+    if (e.type === 'notify') assert.equal('sound' in e, false, 'START must stay silent')
+  }
+
+  const advance = reduce(start.state, { type: 'ADVANCE' }, T0 + 25 * MIN, CFG)
+  for (const e of advance.effects) {
+    if (e.type === 'notify') assert.equal('sound' in e, false, 'ADVANCE must stay silent')
+  }
+
+  const snooze = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG)
+  for (const e of snooze.effects) {
+    if (e.type === 'notify') assert.equal('sound' in e, false, 'SNOOZE must stay silent')
+  }
+
+  const breakLong = reduce(initialState(), { type: 'BREAK_LONG' }, T0, CFG)
+  for (const e of breakLong.effects) {
+    if (e.type === 'notify') assert.equal('sound' in e, false, 'BREAK_LONG must stay silent')
+  }
+})
+
+test('settle stays idempotent for the expiry sound too: it fires exactly once', () => {
+  const s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const first = settle(s, T0 + 25 * MIN, CFG)
+  assert.equal(first.effects.find(e => e.type === 'notify').sound, CFG.sounds.workEnd)
+
+  const second = settle(first.state, T0 + 26 * MIN, CFG)
+  assert.deepEqual(second.effects, [], 'no repeat notification, sound or not')
+})
+
 // Pins a semantic the Task 2 review surfaced as undocumented: START means
 // "resume if paused, otherwise begin a work block". Mid-break that is the
 // useful "done resting" action; mid-work it restarts the block, discarding

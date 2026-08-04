@@ -21,6 +21,11 @@ export const DEFAULTS = {
   countdownSeconds: 10,
   // Kept equal to FALLBACK_SITES in extension/policy.js — see the note there.
   sites: ['reddit.com', 'youtube.com', 'x.com', 'instagram.com'],
+  sounds: {
+    enabled: true,
+    workEnd: 'alarm-clock-elapsed',   // assertive: it is asking you to come back
+    breakEnd: 'complete',             // softer: you are already at the desk
+  },
 }
 
 export function mergeConfig(raw) {
@@ -28,6 +33,20 @@ export function mergeConfig(raw) {
   if (!raw || typeof raw !== 'object') return out
   for (const key of Object.keys(DEFAULTS)) {
     if (raw[key] !== undefined) out[key] = raw[key]
+  }
+  // `sounds` is nested config, not a flat scalar. The loop above just copied it
+  // WHOLESALE if present — fine for `port`, wrong for `sounds`: a user who wrote
+  // only `{ sounds: { enabled: false } }` to silence notifications would lose
+  // workEnd/breakEnd entirely, since nothing else fills them back in. Shallow-merge
+  // it against DEFAULTS.sounds instead, one known key at a time, exactly like this
+  // function already does for the top level — a partial override should only
+  // touch what it names, and a malformed value (not an object, an array, null)
+  // falls back to the defaults wholesale rather than partially poisoning it.
+  out.sounds = { ...DEFAULTS.sounds }
+  if (raw.sounds && typeof raw.sounds === 'object' && !Array.isArray(raw.sounds)) {
+    for (const key of Object.keys(DEFAULTS.sounds)) {
+      if (raw.sounds[key] !== undefined) out.sounds[key] = raw.sounds[key]
+    }
   }
   return out
 }

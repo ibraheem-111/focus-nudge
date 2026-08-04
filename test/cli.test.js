@@ -152,6 +152,13 @@ test('focus --help mentions every command it documents', async () => {
   }
 })
 
+test('focus --help documents that phase-end notifications play a sound, and where to configure it', async () => {
+  const { code, stdout } = await focus('--help')
+  assert.equal(code, 0)
+  assert.match(stdout, /sound/i, 'help text should mention sound notifications')
+  assert.match(stdout, /config\.json/, 'help text should point at where sounds are configured')
+})
+
 test('the CLI sends no Origin, so the daemon serves it', async () => {
   // The Origin guard added for the cross-origin hole must not lock out the CLI.
   const { code, stdout } = await focus('status')

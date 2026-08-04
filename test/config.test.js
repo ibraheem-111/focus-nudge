@@ -20,6 +20,11 @@ test('DEFAULTS carry the spec values', () => {
   // unreadable config.json silently stopped nudging half of them. Kept as an
   // exact-contents assertion so the list cannot drift unnoticed again.
   assert.deepEqual(DEFAULTS.sites, ['reddit.com', 'youtube.com', 'x.com', 'instagram.com'])
+  assert.deepEqual(DEFAULTS.sounds, {
+    enabled: true,
+    workEnd: 'alarm-clock-elapsed',
+    breakEnd: 'complete',
+  })
 })
 
 test('PATHS all sit under CONFIG_DIR', () => {
@@ -41,6 +46,44 @@ test('mergeConfig ignores unknown keys and non-objects', () => {
   assert.equal(mergeConfig({ nonsense: 1 }).nonsense, undefined)
   assert.equal(mergeConfig(null).port, 7373)
   assert.equal(mergeConfig('nope').port, 7373)
+})
+
+// `sounds` is nested config, not a flat scalar like `port` or `workMinutes`. The
+// generic per-key loop above copies a present key WHOLESALE — fine for a number,
+// but for `sounds` it means a user who wrote only `{ sounds: { enabled: false } }`
+// to silence notifications would lose workEnd/breakEnd entirely, since nothing
+// else fills them back in. core.js would then read `config.sounds.workEnd` as
+// undefined and hand notify-send a sound-less hint it never asked to omit.
+// Decision: shallow-merge `sounds` against DEFAULTS.sounds, one key at a time,
+// exactly like mergeConfig already does for the top level — a partial override
+// should only touch what it names.
+test('mergeConfig fills gaps in a partial sounds object from DEFAULTS.sounds', () => {
+  const cfg = mergeConfig({ sounds: { enabled: false } })
+  assert.equal(cfg.sounds.enabled, false)
+  assert.equal(cfg.sounds.workEnd, DEFAULTS.sounds.workEnd, 'workEnd still comes from defaults')
+  assert.equal(cfg.sounds.breakEnd, DEFAULTS.sounds.breakEnd, 'breakEnd still comes from defaults')
+})
+
+test('mergeConfig keeps a fully-specified sounds override intact', () => {
+  const cfg = mergeConfig({ sounds: { enabled: true, workEnd: 'bell', breakEnd: 'message' } })
+  assert.deepEqual(cfg.sounds, { enabled: true, workEnd: 'bell', breakEnd: 'message' })
+})
+
+test('mergeConfig ignores an unknown key inside a partial sounds object', () => {
+  const cfg = mergeConfig({ sounds: { enabled: false, volume: 11 } })
+  assert.equal(cfg.sounds.volume, undefined, 'unknown sub-keys are dropped, same as the top level')
+})
+
+test('mergeConfig falls back to DEFAULTS.sounds for a malformed sounds value', () => {
+  assert.deepEqual(mergeConfig({ sounds: 'nope' }).sounds, DEFAULTS.sounds)
+  assert.deepEqual(mergeConfig({ sounds: null }).sounds, DEFAULTS.sounds)
+  assert.deepEqual(mergeConfig({ sounds: [] }).sounds, DEFAULTS.sounds)
+  assert.deepEqual(mergeConfig({ sounds: 42 }).sounds, DEFAULTS.sounds)
+})
+
+test('mergeConfig with no sounds key at all uses DEFAULTS.sounds', () => {
+  assert.deepEqual(mergeConfig({}).sounds, DEFAULTS.sounds)
+  assert.deepEqual(mergeConfig({ port: 1 }).sounds, DEFAULTS.sounds)
 })
 
 test('writeAtomic writes the file and leaves no temp file behind', t => {

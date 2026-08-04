@@ -394,10 +394,20 @@ export function settle(state, now, config) {
     !next.expiredNotified
   ) {
     next = { ...next, expiredNotified: true }
+    // Sound means "your attention is needed", not "something happened": this is
+    // the one notify effect that fires from a timer, unprompted, when the user is
+    // very likely looking away — every other notify in this file is the direct
+    // result of a button they just clicked, and stays silent. `...(cond ? {sound} : {})`
+    // is deliberate: the key must be ABSENT when sounds are disabled, not merely
+    // undefined-valued, so a caller checking `'sound' in effect` sees the real answer.
+    const sounds = config.sounds
     effects.push({
       type: 'notify',
       title: `${LABEL[next.phase]} finished`,
       body: next.phase === PHASE.WORK ? 'Take your break.' : 'Ready when you are.',
+      ...(sounds && sounds.enabled
+        ? { sound: next.phase === PHASE.WORK ? sounds.workEnd : sounds.breakEnd }
+        : {}),
     })
   }
 

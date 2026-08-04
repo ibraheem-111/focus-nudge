@@ -64,6 +64,16 @@ export function resolveOnPath(name, pathEnv = process.env.PATH ?? '') {
   return null
 }
 
+// The one theme directory notify-send's --hint=string:sound-name:<name> is
+// resolved against on a standard freedesktop/GNOME desktop. Themes vary
+// machine to machine, so a name not found here is a warn, not a FAIL — see the
+// call site.
+export const SOUND_THEME_DIR = '/usr/share/sounds/freedesktop/stereo'
+
+export function soundFilePath(name, themeDir = SOUND_THEME_DIR) {
+  return path.join(themeDir, `${name}.oga`)
+}
+
 const STATUS_TAG = { ok: ' ok ', warn: 'warn', fail: 'FAIL' }
 
 export function formatLine(status, label, detail) {
@@ -205,6 +215,30 @@ export async function runDoctor({ config, repoRoot, paths, log = console.log }) 
   // notify-send
   const notify = resolveOnPath('notify-send')
   report(notify ? 'ok' : 'warn', 'notify-send', notify ?? 'not found — desktop notifications are silently skipped')
+
+  // sound notifications — only a phase expiring on its own (not a click the user
+  // just made) plays one; see the design note in daemon/core.js. `warn` rather
+  // than `fail` throughout: a disabled sound is a deliberate choice, and a theme
+  // file the check cannot find just means this machine's theme differs, not that
+  // anything is broken.
+  const sounds = config.sounds ?? {}
+  report(
+    sounds.enabled ? 'ok' : 'warn',
+    'sounds enabled',
+    sounds.enabled ? 'on' : 'off — set sounds.enabled: true in config.json to hear phase-end notifications',
+  )
+  if (sounds.enabled) {
+    for (const key of ['workEnd', 'breakEnd']) {
+      const name = sounds[key]
+      const file = soundFilePath(name)
+      const exists = fs.existsSync(file)
+      report(
+        exists ? 'ok' : 'warn',
+        `  sounds.${key}`,
+        exists ? `${name} (${file})` : `"${name}" not found at ${file} — themes vary, this may be fine`,
+      )
+    }
+  }
 
   // the extension cannot be probed from a shell at all
   report('warn', 'extension', 'cannot be verified from a shell — check manually: chrome://extensions -> Developer mode -> Load unpacked -> ' + path.join(repoRoot, 'extension'))

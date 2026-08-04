@@ -172,7 +172,7 @@ export function createServer(opts = {}) {
 
   function runEffects(effects) {
     for (const e of effects) {
-      if (e.type === 'notify') notify(e.title, e.body)
+      if (e.type === 'notify') notify(e.title, e.body, e.sound)
       else if (e.type === 'log') appendLog(e.event, e.data)
       else if (e.type === 'openUrls') openUrls(e.urls)
       else if (e.type === 'setSites') {
@@ -403,8 +403,22 @@ function spawnDetached(cmd, args) {
   }
 }
 
-function desktopNotify(title, body) {
-  spawnDetached('notify-send', ['--app-name=focus-nudge', '--icon=appointment-soon', title, body])
+// Pure argv builder, split out from desktopNotify so the --hint syntax can be
+// checked without spawning a real notify-send or depending on one being
+// installed. The GNOME notification daemon's `sound` capability plays this
+// through the existing notification — no second audio process, so system
+// volume, mute and Do Not Disturb are all honoured for free. A sound name is
+// only added when one is given: every other notify (a click at the keyboard)
+// omits it and stays silent.
+export function buildNotifySendArgs(title, body, sound) {
+  const args = ['--app-name=focus-nudge', '--icon=appointment-soon']
+  if (sound) args.push(`--hint=string:sound-name:${sound}`)
+  args.push(title, body)
+  return args
+}
+
+function desktopNotify(title, body, sound) {
+  spawnDetached('notify-send', buildNotifySendArgs(title, body, sound))
 }
 
 // Started directly rather than imported by a test.

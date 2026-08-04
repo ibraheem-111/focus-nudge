@@ -129,6 +129,12 @@ Phases never advance on their own: an expired block waits for you. Watched sites
 are nudged during work AND short breaks — a long break or an explicit
 \`focus off\` are the only windows where they open freely. See \`focus sites\`.
 
+A work block or break finishing on its own plays a sound alongside the desktop
+notification — that is the one moment you are likely not watching the screen.
+Actions you trigger yourself (start, skip, snooze, break) stay silent. Configure
+or disable this under "sounds" in config.json; see \`focus doctor\` to check
+whether sounds are enabled and the configured sound files exist.
+
 The daemon holds all state. Start or check it with:
   systemctl --user status focus-nudge
 `

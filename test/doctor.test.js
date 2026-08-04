@@ -189,6 +189,89 @@ test('runDoctor reports ok for port listening and GET /state against a real scra
   assert.equal(typeof code, 'number')
 })
 
+function scratchPaths(dir) {
+  return {
+    dir: path.join(dir, 'config'),
+    files: {
+      'config.json': path.join(dir, 'config', 'config.json'),
+      'quotes.txt': path.join(dir, 'config', 'quotes.txt'),
+      'state.json': path.join(dir, 'config', 'state.json'),
+      'log.jsonl': path.join(dir, 'config', 'log.jsonl'),
+    },
+  }
+}
+
+// --- sound reporting ----------------------------------------------------
+// `focus doctor` must say whether sounds are enabled, which names are
+// configured, and whether those names actually exist in the theme — but a
+// missing theme file is a warn (themes vary machine to machine), never a FAIL.
+
+test('runDoctor reports sounds enabled and the configured names', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-doctor-'))
+  const lines = []
+  await runDoctor({
+    config: { port: 1, sounds: { enabled: true, workEnd: 'alarm-clock-elapsed', breakEnd: 'complete' } },
+    repoRoot: dir,
+    paths: scratchPaths(dir),
+    log: line => lines.push(line),
+  })
+  t_cleanup(dir)
+  assert.ok(lines.some(l => l.includes('sounds enabled') && l.includes('ok')), lines.join('\n'))
+  assert.ok(lines.some(l => l.includes('workEnd') && l.includes('alarm-clock-elapsed')), lines.join('\n'))
+  assert.ok(lines.some(l => l.includes('breakEnd') && l.includes('complete')), lines.join('\n'))
+})
+
+test('runDoctor warns, but does not FAIL, when a configured sound file is missing from the theme', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-doctor-'))
+  const lines = []
+  const code = await runDoctor({
+    config: { port: 1, sounds: { enabled: true, workEnd: 'not-a-real-sound-xyz', breakEnd: 'complete' } },
+    repoRoot: dir,
+    paths: scratchPaths(dir),
+    log: line => lines.push(line),
+  })
+  t_cleanup(dir)
+  assert.ok(
+    lines.some(l => l.includes('warn') && l.includes('workEnd') && l.includes('not-a-real-sound-xyz')),
+    lines.join('\n'),
+  )
+  assert.ok(
+    !lines.some(l => l.includes('FAIL') && l.includes('workEnd')),
+    'a missing theme file must warn, not fail — themes vary across machines',
+  )
+})
+
+test('runDoctor reports ok for a sound name that exists in the theme', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-doctor-'))
+  const lines = []
+  await runDoctor({
+    config: { port: 1, sounds: { enabled: true, workEnd: 'alarm-clock-elapsed', breakEnd: 'complete' } },
+    repoRoot: dir,
+    paths: scratchPaths(dir),
+    log: line => lines.push(line),
+  })
+  t_cleanup(dir)
+  const workLine = lines.find(l => l.includes('workEnd'))
+  assert.ok(workLine, lines.join('\n'))
+  assert.match(workLine, /\[ ok \]/)
+})
+
+test('runDoctor reports sounds disabled without failing the run', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-doctor-'))
+  const lines = []
+  await runDoctor({
+    config: { port: 1, sounds: { enabled: false, workEnd: 'alarm-clock-elapsed', breakEnd: 'complete' } },
+    repoRoot: dir,
+    paths: scratchPaths(dir),
+    log: line => lines.push(line),
+  })
+  t_cleanup(dir)
+  assert.ok(
+    lines.some(l => l.includes('sounds enabled') && (l.includes('warn') || l.includes('off'))),
+    lines.join('\n'),
+  )
+})
+
 function t_cleanup(dir) {
   fs.rmSync(dir, { recursive: true, force: true })
 }
