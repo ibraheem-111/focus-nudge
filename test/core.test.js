@@ -550,25 +550,50 @@ test('QUEUE_ADD requires a url', () => {
   assert.deepEqual(s.queue, [])
 })
 
-test('BREAK_LONG opens the queue and clears the task list', () => {
-  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'done thing' }, T0, CFG).state
+test('BREAK_LONG opens the queue and leaves the task list alone', () => {
+  // This test previously asserted the opposite — that a long break cleared the
+  // list. That was a real bug reported after two weeks of use: a break does not
+  // complete your work, so nothing here may delete it. Changed deliberately.
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'still to do' }, T0, CFG).state
   s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
 
   const { state, effects } = reduce(s, { type: 'BREAK_LONG' }, T0, CFG)
   assert.equal(state.phase, PHASE.LONG_BREAK)
   assert.equal(state.endsAt, T0 + 20 * MIN)
-  assert.deepEqual(state.tasks, [], 'the task list is cleared for the break')
-  assert.deepEqual(state.queue, [], 'the queue is drained')
+  assert.deepEqual(state.tasks.map(t => t.text), ['still to do'], 'the task survives the break')
+  assert.deepEqual(state.queue, [], 'the queue still drains')
 
   const open = effects.find(e => e.type === 'openUrls')
   assert.deepEqual(open.urls, ['https://reddit.com/r/x'])
-  assert.ok(effects.some(e => e.type === 'log' && e.event === 'tasks_archived'))
+  assert.equal(effects.some(e => e.event === 'tasks_archived'), false, 'nothing is archived any more')
+})
+
+test('snoozing does not delete micro-tasks', () => {
+  // The bug the author hit: `focus off 2h` for a meeting wiped the whole list.
+  // Ten of eleven archive events in two weeks of real logs were snooze-triggered.
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'fix the auth redirect' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'reply to Nick' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
+
+  const { state } = reduce(s, { type: 'SNOOZE', hours: 2 }, T0, CFG)
+  assert.equal(state.phase, PHASE.SNOOZED)
+  assert.deepEqual(state.tasks.map(t => t.text), ['fix the auth redirect', 'reply to Nick'])
+  assert.equal(state.tasks[0].done, true, 'done flags survive too')
+  assert.equal(state.nextTaskId, 3, 'and the numbering is not reset')
+})
+
+test('the automatic long break after four blocks also spares the tasks', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'carry me across the cycle' }, T0, CFG).state
+  s = { ...s, phase: PHASE.WORK, endsAt: T0 + MIN, blocksCompleted: 3 }
+  const { state } = reduce(s, { type: 'ADVANCE' }, T0, CFG)
+  assert.equal(state.phase, PHASE.LONG_BREAK)
+  assert.deepEqual(state.tasks.map(t => t.text), ['carry me across the cycle'])
 })
 
 test('snoozing also drains the queue', () => {
   let s = reduce(initialState(), { type: 'QUEUE_ADD', url: 'https://reddit.com/r/y', title: 'y' }, T0, CFG).state
   const { state, effects } = reduce(s, { type: 'SNOOZE', hours: 2 }, T0, CFG)
-  assert.deepEqual(state.queue, [])
+  assert.deepEqual(state.queue, [], 'draining is non-destructive — the links are opened, not discarded')
   assert.deepEqual(effects.find(e => e.type === 'openUrls').urls, ['https://reddit.com/r/y'])
 })
 

@@ -108,7 +108,7 @@ export function reduce(state, action, now, config) {
       }
 
       let next = { ...enter(state, toPhase, now, config), blocksCompleted: banked }
-      if (toPhase === PHASE.LONG_BREAK) next = openLongBreak(next, effects)
+      if (toPhase === PHASE.LONG_BREAK) next = drainSavedLinks(next, effects)
 
       effects.push({
         type: 'notify',
@@ -163,7 +163,7 @@ export function reduce(state, action, now, config) {
         body: `Back on in ${hours} hour${hours === 1 ? '' : 's'}.`,
       })
       effects.push({ type: 'log', event: 'snooze', data: { hours } })
-      return { state: openLongBreak(next, effects), effects }
+      return { state: drainSavedLinks(next, effects), effects }
     }
 
     case 'GRACE': {
@@ -177,7 +177,7 @@ export function reduce(state, action, now, config) {
     }
 
     case 'BREAK_LONG': {
-      const next = openLongBreak(enter(state, PHASE.LONG_BREAK, now, config), effects)
+      const next = drainSavedLinks(enter(state, PHASE.LONG_BREAK, now, config), effects)
       effects.push({
         type: 'notify',
         title: 'Long break',
@@ -312,29 +312,22 @@ export function view(state, now, config) {
 
 // Entering a sanctioned window (long break or snooze) archives the task list
 // and drains the saved-links queue.
-function openLongBreak(state, effects) {
-  let next = state
-
-  if (next.tasks.length > 0) {
-    effects.push({
-      type: 'log',
-      event: 'tasks_archived',
-      data: {
-        tasks: next.tasks,
-        open: next.tasks.filter(t => !t.done).length,
-        done: next.tasks.filter(t => t.done).length,
-      },
-    })
-    next = withTasks(next, [])
-  }
-
-  if (next.queue.length > 0) {
-    effects.push({ type: 'openUrls', urls: next.queue.map(q => q.url) })
-    effects.push({ type: 'log', event: 'queue_drained', data: { count: next.queue.length } })
-    next = { ...next, queue: [] }
-  }
-
-  return next
+// Draining the saved-links queue is all this does.
+//
+// It used to archive and clear the task list as well, on the reasoning that
+// LONG_BREAK and SNOOZED are both "sanctioned windows" and should behave
+// identically. That conflated two unrelated things: which sites open freely, and
+// whether the user's work is finished. A break does not complete your tasks, and
+// snoozing for a meeting certainly does not. Over two weeks of real use this
+// silently destroyed 29 open tasks across 11 snoozes.
+//
+// Only the user decides when a task is done — `task done`, `task rm`,
+// `task clear`, `task clear done`. Nothing here may delete their list.
+function drainSavedLinks(state, effects) {
+  if (state.queue.length === 0) return state
+  effects.push({ type: 'openUrls', urls: state.queue.map(q => q.url) })
+  effects.push({ type: 'log', event: 'queue_drained', data: { count: state.queue.length } })
+  return { ...state, queue: [] }
 }
 
 // Ids only need to be unique among LIVE tasks. Once the list empties there is
