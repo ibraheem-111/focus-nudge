@@ -1,2 +1,10 @@
 node_modules/
 *.log
+
+# Secrets. This repo is public — anything matching these must never be committed.
+# The Linear API key lives in .env and is read at runtime from outside git.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
