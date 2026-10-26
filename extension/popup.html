@@ -24,7 +24,10 @@
 
   <h2>Micro-tasks</h2>
   <div class="tasks" id="tasks"></div>
-  <input type="text" id="new-task" placeholder="add a micro-task" autocomplete="off">
+  <div class="new-task-row">
+    <input type="text" id="new-task" placeholder="add a micro-task" autocomplete="off">
+    <select id="new-task-project" title="Linear project for the new task" hidden></select>
+  </div>
   <p><button class="small" id="clear-done" hidden>Clear done</button></p>
 
   <h2>Saved for later</h2>

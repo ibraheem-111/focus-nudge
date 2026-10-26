@@ -741,3 +741,185 @@ test('PAUSE does not touch nudging, and nudging changes do not touch a pause', (
   assert.equal(s.paused, true, 'still paused')
   assert.equal(s.pausedRemainingMs, 15 * MIN)
 })
+
+// --- Linear two-way sync ---------------------------------------------------
+// core.js never talks to Linear. It asks with `linearCreate` / `linearSetDone`
+// effects, and server.js reports back with TASK_LINKED and LINEAR_SYNC.
+
+const LIN = { ...CFG, linearEnabled: true }
+const PROJ = { id: 'proj-9', name: 'PCB Startup' }
+const ISSUE = (id, stateType, title = `title ${id}`) =>
+  ({ id, identifier: `IBR-${id}`, url: `https://linear.app/x/IBR-${id}`, title, stateType })
+const LINK = id => ({ id, identifier: `IBR-${id}`, url: `https://linear.app/x/IBR-${id}` })
+
+test('with Linear off, adding a task asks for nothing', () => {
+  const { state, effects } = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG)
+  assert.equal(effects.some(e => e.type === 'linearCreate'), false)
+  assert.equal(state.tasks[0].linearPending, false)
+  assert.equal(state.tasks[0].linear, null)
+})
+
+test('with Linear on, adding a task asks for an issue in the chosen project', () => {
+  const { state, effects } = reduce(initialState(), { type: 'TASK_ADD', text: 'route the PCB', project: PROJ }, T0, LIN)
+  assert.deepEqual(state.tasks[0], {
+    id: 1, text: 'route the PCB', done: false, project: PROJ, linear: null, linearPending: true,
+  })
+  assert.deepEqual(effects.find(e => e.type === 'linearCreate'),
+    { type: 'linearCreate', taskId: 1, text: 'route the PCB', projectId: 'proj-9' })
+})
+
+test('a task with no project asks for an issue with no project', () => {
+  const { state, effects } = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, LIN)
+  assert.equal(state.tasks[0].project, null)
+  assert.equal(effects.find(e => e.type === 'linearCreate').projectId, null)
+})
+
+test('a malformed project is dropped rather than stored', () => {
+  const { state } = reduce(initialState(), { type: 'TASK_ADD', text: 'a', project: { name: 'no id' } }, T0, LIN)
+  assert.equal(state.tasks[0].project, null)
+})
+
+test('TASK_LINKED attaches the issue and clears the pending flag', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_LINKED', taskId: 1, text: 'a', linear: LINK('40') }, T0, LIN).state
+  assert.deepEqual(s.tasks[0].linear, LINK('40'))
+  assert.equal(s.tasks[0].linearPending, false)
+})
+
+test('TASK_LINKED for a task that is gone dismisses the orphan issue so sync will not re-add it', () => {
+  // Task ids restart at 1 once the list empties, so the text is checked too:
+  // a late answer must never link a different task that reused the id.
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'old' }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_ADD', text: 'new' }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_LINKED', taskId: 1, text: 'old', linear: LINK('40') }, T0, LIN).state
+  assert.equal(s.tasks[0].linear, null, 'the new task is not linked to the old issue')
+  assert.equal(s.tasks[0].linearPending, true)
+  assert.deepEqual(s.linearDismissed, ['40'])
+})
+
+test('ticking a linked task done and back asks Linear to follow both ways', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_LINKED', taskId: 1, text: 'a', linear: LINK('40') }, T0, LIN).state
+  let out = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, LIN)
+  assert.deepEqual(out.effects.find(e => e.type === 'linearSetDone'), { type: 'linearSetDone', issueId: '40', done: true })
+  assert.ok(out.effects.some(e => e.event === 'task_done'))
+  out = reduce(out.state, { type: 'TASK_TOGGLE', id: 1 }, T0, LIN)
+  assert.deepEqual(out.effects.find(e => e.type === 'linearSetDone'), { type: 'linearSetDone', issueId: '40', done: false })
+})
+
+test('ticking an unlinked task asks Linear for nothing but still logs task_done', () => {
+  const s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
+  const { effects } = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG)
+  assert.equal(effects.some(e => e.type === 'linearSetDone'), false)
+  assert.ok(effects.some(e => e.event === 'task_done'))
+})
+
+test('removing or clearing linked tasks remembers their issues as dismissed', () => {
+  let s = initialState()
+  for (const [i, t] of ['a', 'b', 'c'].entries()) {
+    s = reduce(s, { type: 'TASK_ADD', text: t }, T0, LIN).state
+    s = reduce(s, { type: 'TASK_LINKED', taskId: i + 1, text: t, linear: LINK(String(40 + i)) }, T0, LIN).state
+  }
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 2 }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, LIN).state
+  assert.deepEqual(s.linearDismissed, ['40', '41'])
+  s = reduce(s, { type: 'TASK_CLEAR' }, T0, LIN).state
+  assert.deepEqual(s.linearDismissed, ['40', '41', '42'])
+})
+
+test('LINEAR_SYNC adds active issues the list does not have yet', () => {
+  const { state, effects } = reduce(initialState(),
+    { type: 'LINEAR_SYNC', issues: [ISSUE('17', 'started'), ISSUE('43', 'unstarted')] }, T0, LIN)
+  assert.deepEqual(state.tasks.map(t => [t.id, t.text, t.done, t.linear.identifier, t.linearPending, t.project]),
+    [[1, 'title 17', false, 'IBR-17', false, null], [2, 'title 43', false, 'IBR-43', false, null]])
+  assert.deepEqual(effects.find(e => e.event === 'linear_sync').data, { added: 2, completed: 0 })
+})
+
+test('LINEAR_SYNC ignores completed issues it has never seen', () => {
+  const { state, effects } = reduce(initialState(),
+    { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'completed'), ISSUE('2', 'canceled'), ISSUE('3', 'duplicate')] }, T0, LIN)
+  assert.deepEqual(state.tasks, [])
+  assert.deepEqual(effects, [], 'nothing changed, nothing logged')
+})
+
+test('LINEAR_SYNC ticks a linked task when its issue is closed in Linear, and follows a rename', () => {
+  let s = reduce(initialState(), { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'started'), ISSUE('2', 'started'), ISSUE('3', 'started')] }, T0, LIN).state
+  const { state, effects } = reduce(s, { type: 'LINEAR_SYNC', issues: [
+    ISSUE('1', 'completed'), ISSUE('2', 'canceled'), ISSUE('3', 'started', 'renamed in Linear'),
+  ] }, T0, LIN)
+  assert.deepEqual(state.tasks.map(t => [t.text, t.done]),
+    [['title 1', true], ['title 2', true], ['renamed in Linear', false]])
+  assert.deepEqual(effects.find(e => e.event === 'linear_sync').data, { added: 0, completed: 2 })
+  assert.equal(effects.some(e => e.type === 'linearSetDone'), false, 'no echo back to Linear')
+})
+
+test('LINEAR_SYNC never un-ticks a task the user ticked here', () => {
+  let s = reduce(initialState(), { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'started')] }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, LIN).state
+  const { state } = reduce(s, { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'started')] }, T0, LIN)
+  assert.equal(state.tasks[0].done, true)
+})
+
+test('LINEAR_SYNC never re-adds an issue the user removed here', () => {
+  let s = reduce(initialState(), { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'started')] }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, LIN).state
+  const { state } = reduce(s, { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'started')] }, T0, LIN)
+  assert.deepEqual(state.tasks, [])
+})
+
+test('LINEAR_SYNC with Linear off or nonsense input changes nothing', () => {
+  const s = initialState()
+  assert.deepEqual(reduce(s, { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'started')] }, T0, CFG).state, s)
+  assert.deepEqual(reduce(s, { type: 'LINEAR_SYNC', issues: 'nope' }, T0, LIN).state, s)
+  assert.deepEqual(reduce(s, { type: 'LINEAR_SYNC', issues: [null, { id: 5 }] }, T0, LIN).state, s)
+})
+
+test('view carries linearEnabled', () => {
+  assert.equal(view(initialState(), T0, CFG).linearEnabled, false)
+  assert.equal(view(initialState(), T0, LIN).linearEnabled, true)
+})
+
+// Asked for by the user mid-build: dropping a task drops it in Linear too, so the
+// two boards do not drift apart. A task already ticked is Done in Linear, and
+// clearing it from the list must not turn that Done into Canceled.
+const cancels = effects => effects.filter(e => e.type === 'linearCancel').map(e => e.issueId)
+
+function linkedList(texts) {
+  let s = initialState()
+  for (const [i, t] of texts.entries()) {
+    s = reduce(s, { type: 'TASK_ADD', text: t }, T0, LIN).state
+    s = reduce(s, { type: 'TASK_LINKED', taskId: i + 1, text: t, linear: LINK(String(40 + i)) }, T0, LIN).state
+  }
+  return s
+}
+
+test('removing an open linked task cancels its Linear issue', () => {
+  const { effects } = reduce(linkedList(['a']), { type: 'TASK_REMOVE', id: 1 }, T0, LIN)
+  assert.deepEqual(cancels(effects), ['40'])
+})
+
+test('removing a task already ticked done leaves its Linear issue Done', () => {
+  let s = reduce(linkedList(['a']), { type: 'TASK_TOGGLE', id: 1 }, T0, LIN).state
+  const { effects } = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, LIN)
+  assert.deepEqual(cancels(effects), [])
+})
+
+test('TASK_CLEAR cancels the open linked tasks only, and clear done cancels nothing', () => {
+  let s = reduce(linkedList(['a', 'b', 'c']), { type: 'TASK_TOGGLE', id: 2 }, T0, LIN).state
+  assert.deepEqual(cancels(reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, LIN).effects), [])
+  assert.deepEqual(cancels(reduce(s, { type: 'TASK_CLEAR' }, T0, LIN).effects), ['40', '42'])
+})
+
+test('removing an unlinked task asks Linear for nothing', () => {
+  const s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
+  assert.deepEqual(cancels(reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, CFG).effects), [])
+})
+
+test('an issue created for a task removed before Linear answered is cancelled', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'old' }, T0, LIN).state
+  s = reduce(s, { type: 'TASK_REMOVE', id: 1 }, T0, LIN).state
+  const { effects } = reduce(s, { type: 'TASK_LINKED', taskId: 1, text: 'old', linear: LINK('40') }, T0, LIN)
+  assert.deepEqual(cancels(effects), ['40'])
+})

@@ -77,7 +77,8 @@ export function renderTasks(el, tasks, { onToggle, onRemove } = {}) {
   // just-clicked checkbox snap back to the daemon's not-yet-updated value, so a
   // click looked like it had done nothing. Only rebuild when the data actually
   // changed, which leaves the user's click visible until the real update lands.
-  const signature = JSON.stringify((tasks ?? []).map(t => [t.id, t.text, t.done]))
+  const signature = JSON.stringify((tasks ?? []).map(t =>
+    [t.id, t.text, t.done, t.linear?.identifier ?? null, Boolean(t.linearPending)]))
   if (el.dataset.taskSig === signature) return
   el.dataset.taskSig = signature
 
@@ -102,6 +103,8 @@ export function renderTasks(el, tasks, { onToggle, onRemove } = {}) {
     text.textContent = t.text
 
     row.append(box, text)
+    const tag = linearTag(t)
+    if (tag) row.append(tag)
 
     if (onRemove) {
       const x = document.createElement('button')
@@ -114,4 +117,56 @@ export function renderTasks(el, tasks, { onToggle, onRemove } = {}) {
     }
     el.append(row)
   }
+}
+
+// The Linear identifier after a linked task, as a link to the issue. The url came
+// from the network, so only an http(s) one becomes an href.
+function linearTag(t) {
+  if (t.linear?.identifier) {
+    const safe = /^https?:\/\//.test(String(t.linear.url ?? ''))
+    const node = document.createElement(safe ? 'a' : 'span')
+    node.className = 'task-linear'
+    node.textContent = t.linear.identifier
+    if (safe) {
+      node.href = t.linear.url
+      node.target = '_blank'
+      node.rel = 'noopener'
+      node.title = t.project?.name ? `open in Linear (${t.project.name})` : 'open in Linear'
+    }
+    return node
+  }
+  if (t.linearPending) {
+    const node = document.createElement('span')
+    node.className = 'task-linear pending'
+    node.textContent = '…'
+    node.title = 'waiting for Linear — it retries every minute'
+    return node
+  }
+  return null
+}
+
+// Fills the "Linear project" picker from GET /linear. Hidden when Linear is off
+// or the daemon is down, so a plain task list looks exactly as it did before.
+export function fillProjects(select, linear) {
+  const projects = linear && linear.enabled && Array.isArray(linear.projects) ? linear.projects : null
+  select.hidden = !projects
+  if (!projects) return
+  const keep = select.value
+  const none = document.createElement('option')
+  none.value = ''
+  none.textContent = 'no project'
+  const options = projects.map(p => {
+    const o = document.createElement('option')
+    o.value = p.id
+    o.textContent = p.name
+    return o
+  })
+  select.replaceChildren(none, ...options)
+  select.value = projects.some(p => p.id === keep) ? keep : ''
+}
+
+export function chosenProject(select, projects) {
+  if (select.hidden || !select.value) return undefined
+  const p = (projects ?? []).find(p => p.id === select.value)
+  return p ? { id: p.id, name: p.name } : undefined
 }

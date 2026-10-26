@@ -71,9 +71,18 @@ export function createLinear({ apiKey, teamId, fetch = globalThis.fetch }) {
     const nodes = data.team?.states?.nodes ?? []
     const done = nodes.find(s => s.type === 'completed')
     const todo = nodes.find(s => s.type === 'unstarted' && s.name === 'Todo') ?? nodes.find(s => s.type === 'unstarted')
-    if (!done || !todo) throw new Error('linear: team has no completed or unstarted state')
-    stateIds = { done: done.id, todo: todo.id }
+    const canceled = nodes.find(s => s.type === 'canceled')
+    if (!done || !todo || !canceled) throw new Error('linear: team has no completed, unstarted or canceled state')
+    stateIds = { done: done.id, todo: todo.id, canceled: canceled.id }
     return stateIds
+  }
+
+  async function moveTo(issueId, stateId) {
+    const data = await gql(
+      'mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }',
+      { id: issueId, stateId },
+    )
+    if (!data.issueUpdate?.success) throw new Error('linear: issueUpdate did not succeed')
   }
 
   return {
@@ -91,11 +100,13 @@ export function createLinear({ apiKey, teamId, fetch = globalThis.fetch }) {
 
     async setDone(issueId, done) {
       const ids = await resolveStates()
-      const data = await gql(
-        'mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }',
-        { id: issueId, stateId: done ? ids.done : ids.todo },
-      )
-      if (!data.issueUpdate?.success) throw new Error('linear: issueUpdate did not succeed')
+      await moveTo(issueId, done ? ids.done : ids.todo)
+    },
+
+    // The task was removed in focus-nudge. Canceled, not deleted: it stays
+    // findable in Linear and can be reopened there.
+    async cancel(issueId) {
+      await moveTo(issueId, (await resolveStates()).canceled)
     },
 
     // Every active issue in the team, plus the issues already linked to a task

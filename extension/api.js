@@ -7,13 +7,13 @@ const TIMEOUT_MS = 1500
 
 export const DAEMON_DOWN = Object.freeze({ down: true })
 
-async function request(method, route, body) {
+async function request(method, route, body, timeoutMs = TIMEOUT_MS) {
   try {
     const res = await fetch(BASE + route, {
       method,
       headers: body ? { 'content-type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) return DAEMON_DOWN
     return await res.json()
@@ -27,6 +27,8 @@ export const isDown = v => !v || v === DAEMON_DOWN || v.down === true
 export const getState = () => request('GET', '/state')
 export const getQuotes = () => request('GET', '/quotes')
 export const getStats = () => request('GET', '/stats')
+// Slower than the rest: the daemon may have to ask Linear for the project list.
+export const getLinear = () => request('GET', '/linear', undefined, 12000)
 export const timer = action => request('POST', '/timer', { action })
 // hours: a positive number, or null for "until I turn it back on".
 export const nudgingOff = hours =>

@@ -13,14 +13,14 @@ const PHASE_LABEL = {
   LONG_BREAK: 'long break',
 }
 
-async function call(method, route, body) {
+async function call(method, route, body, timeoutMs = 3000) {
   let res
   try {
     res = await fetch(BASE + route, {
       method,
       headers: body ? { 'content-type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
   } catch {
     console.error('focus: the daemon is not running. Start it with:')
@@ -33,6 +33,26 @@ async function call(method, route, body) {
     process.exit(1)
   }
   return data
+}
+
+// Resolves a case-insensitive prefix against the daemon's Linear projects. An
+// exact name wins; otherwise exactly one project must start with the prefix.
+async function pickProject(prefix) {
+  const linear = await call('GET', '/linear', undefined, 15000)
+  if (!linear.enabled) {
+    console.error('focus: Linear sync is off (no LINEAR_API_KEY), so there are no projects to pick from')
+    process.exit(1)
+  }
+  const want = prefix.toLowerCase()
+  const exact = linear.projects.filter(p => p.name.toLowerCase() === want)
+  const matches = exact.length ? exact : linear.projects.filter(p => p.name.toLowerCase().startsWith(want))
+  if (matches.length === 1) return matches[0]
+  const listed = matches.length ? matches : linear.projects
+  console.error(matches.length
+    ? `focus: "${prefix}" matches more than one project:`
+    : `focus: no Linear project starts with "${prefix}". The projects are:`)
+  for (const p of listed) console.error(`  ${p.name}`)
+  process.exit(1)
 }
 
 function formatDuration(ms) {
@@ -96,7 +116,10 @@ function printStatus(v) {
 
   if (v.tasks.length) {
     console.log()
-    for (const t of v.tasks) console.log(`  ${t.done ? '[x]' : '[ ]'} ${t.id}  ${t.text}`)
+    for (const t of v.tasks) {
+      const tag = t.linear?.identifier ? `  ${t.linear.identifier}` : t.linearPending ? '  (Linear pending)' : ''
+      console.log(`  ${t.done ? '[x]' : '[ ]'} ${t.id}  ${t.text}${tag}`)
+    }
   }
   if (v.queueDepth) {
     console.log()
@@ -125,10 +148,14 @@ usage: focus [command]
   on                     turn nudging back on
 
   task                   list the micro-tasks
-  task <text>            add a micro-task
+  task <text>            add a micro-task (and a Linear issue, when Linear is on)
+  task <text> --project <name>
+                         file the Linear issue under a project; any unique
+                         prefix of its name works, in any case
   task done <id>         tick one off (also: task toggle <id>)
-  task rm <id>           remove one
-  task clear             empty the list (ids restart at 1 once it is empty)
+  task rm <id>           remove one (cancels its Linear issue if it is open)
+  task clear             empty the list (ids restart at 1 once it is empty;
+                         open Linear issues are cancelled)
   task clear done        remove only the ticked-off tasks
 
   sites                  list the watched domains
@@ -217,7 +244,19 @@ switch (cmd) {
       const action = words[0] === 'done' ? 'clearDone' : 'clear'
       printStatus(await call('POST', '/tasks', { action }))
     } else {
-      printStatus(await call('POST', '/tasks', { action: 'add', text: [sub, ...words].join(' ') }))
+      const all = [sub, ...words]
+      const at = all.indexOf('--project')
+      let project
+      if (at !== -1) {
+        const prefix = all.slice(at + 1).join(' ').trim()
+        all.splice(at)
+        if (!prefix) {
+          console.error('focus: --project needs a project name, e.g. focus task fix the board --project pcb')
+          process.exit(1)
+        }
+        project = await pickProject(prefix)
+      }
+      printStatus(await call('POST', '/tasks', { action: 'add', text: all.join(' '), project }))
     }
     break
   }

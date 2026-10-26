@@ -1,5 +1,5 @@
-import { getState, getStats, timer, task, queueDrain, nudgingOff, nudgingOn, isDown } from './api.js'
-import { clockLine, renderTasks, PHASE_LABEL, nudgingLine } from './ui.js'
+import { getState, getStats, timer, task, queueDrain, nudgingOff, nudgingOn, isDown, getLinear } from './api.js'
+import { clockLine, renderTasks, PHASE_LABEL, nudgingLine, fillProjects, chosenProject } from './ui.js'
 
 const el = id => document.getElementById(id)
 const input = el('new-task')
@@ -78,8 +78,18 @@ input.addEventListener('keydown', async e => {
   const text = input.value.trim()
   if (!text) return
   input.value = ''
-  render(await refreshWith(task('add', { text })), false)
+  render(await refreshWith(task('add', { text, project: chosenProject(el('new-task-project'), linearProjects) })), false)
 })
+
+// The Linear project picker, refreshed every ten minutes like the daemon's cache.
+let linearProjects = []
+async function loadProjects() {
+  const linear = await getLinear()
+  linearProjects = linear?.projects ?? []
+  fillProjects(el('new-task-project'), linear)
+}
+loadProjects()
+setInterval(loadProjects, 10 * 60_000)
 
 el('clear-done').addEventListener('click', async () => {
   render(await refreshWith(task('clearDone')), false)

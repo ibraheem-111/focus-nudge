@@ -29,6 +29,8 @@ export function initialState() {
     graces: {},
     nudgeOffUntil: null,
     nudgeOffIndefinite: false,
+    // Linear issue ids the user removed here. Sync never brings these back.
+    linearDismissed: [],
   }
 }
 
@@ -211,34 +213,66 @@ export function reduce(state, action, now, config) {
     case 'TASK_ADD': {
       const text = String(action.text || '').trim()
       if (!text) return { state, effects }
+      const p = action.project
+      const project = p && typeof p.id === 'string' && p.id && typeof p.name === 'string'
+        ? { id: p.id, name: p.name } : null
+      const linearPending = Boolean(config.linearEnabled)
+      const id = state.nextTaskId
+      effects.push({ type: 'log', event: 'task_added', data: { linear: linearPending } })
+      if (linearPending) effects.push({ type: 'linearCreate', taskId: id, text, projectId: project?.id ?? null })
       return {
         state: {
           ...state,
-          tasks: [...state.tasks, { id: state.nextTaskId, text, done: false }],
-          nextTaskId: state.nextTaskId + 1,
+          tasks: [...state.tasks, { id, text, done: false, project, linear: null, linearPending }],
+          nextTaskId: id + 1,
         },
         effects,
       }
     }
 
+    // server.js reports the issue linearCreate made. Ids restart once the list
+    // empties, so the text must match too: a late answer never links a stranger.
+    // An answer for a task that is gone leaves an orphan issue in Linear: it is
+    // cancelled, as the removal would have done, and dismissed so sync skips it.
+    case 'TASK_LINKED': {
+      const link = cleanLink(action.linear)
+      if (!link) return { state, effects }
+      const match = t => t.id === action.taskId && t.linearPending && t.text === action.text
+      if (!state.tasks.some(match)) {
+        effects.push({ type: 'linearCancel', issueId: link.id })
+        return { state: dismiss(state, [link.id]), effects }
+      }
+      return {
+        state: { ...state, tasks: state.tasks.map(t => (match(t) ? { ...t, linear: link, linearPending: false } : t)) },
+        effects,
+      }
+    }
+
     case 'TASK_TOGGLE': {
-      if (!state.tasks.some(t => t.id === action.id)) return { state, effects }
+      const task = state.tasks.find(t => t.id === action.id)
+      if (!task) return { state, effects }
+      const done = !task.done
+      if (done) effects.push({ type: 'log', event: 'task_done', data: { linear: Boolean(task.linear) } })
+      if (task.linear) effects.push({ type: 'linearSetDone', issueId: task.linear.id, done })
       return {
         state: {
           ...state,
-          tasks: state.tasks.map(t => (t.id === action.id ? { ...t, done: !t.done } : t)),
+          tasks: state.tasks.map(t => (t.id === action.id ? { ...t, done } : t)),
         },
         effects,
       }
     }
 
     case 'TASK_REMOVE': {
-      if (!state.tasks.some(t => t.id === action.id)) return { state, effects }
-      return { state: withTasks(state, state.tasks.filter(t => t.id !== action.id)), effects }
+      const gone = state.tasks.filter(t => t.id === action.id)
+      if (gone.length === 0) return { state, effects }
+      cancelOpenLinked(gone, effects)
+      return { state: withTasks(dismissTasks(state, gone), state.tasks.filter(t => t.id !== action.id)), effects }
     }
 
     case 'TASK_CLEAR':
-      return { state: withTasks(state, []), effects }
+      cancelOpenLinked(state.tasks, effects)
+      return { state: withTasks(dismissTasks(state, state.tasks), []), effects }
 
     case 'TASK_CLEAR_DONE': {
       const open = state.tasks.filter(t => !t.done)
@@ -248,7 +282,43 @@ export function reduce(state, action, now, config) {
         event: 'tasks_cleared_done',
         data: { count: state.tasks.length - open.length },
       })
-      return { state: withTasks(state, open), effects }
+      return { state: withTasks(dismissTasks(state, state.tasks.filter(t => t.done)), open), effects }
+    }
+
+    // The issues server.js fetched: every active issue in the team, plus the ones
+    // already linked whatever their state. Linear may close a task here; it may
+    // never reopen one the user ticked, or bring back one the user removed.
+    case 'LINEAR_SYNC': {
+      if (!config.linearEnabled || !Array.isArray(action.issues)) return { state, effects }
+      const issues = action.issues.map(cleanIssue).filter(Boolean)
+      const dismissed = new Set(state.linearDismissed ?? [])
+      const byId = new Map(issues.map(i => [i.id, i]))
+      let completed = 0
+      let changed = false
+      const tasks = state.tasks.map(t => {
+        const issue = t.linear && byId.get(t.linear.id)
+        if (!issue) return t
+        let next = t
+        if (CLOSED_TYPES.has(issue.stateType) && !t.done) { next = { ...next, done: true }; completed++ }
+        if (issue.title && issue.title !== t.text) next = { ...next, text: issue.title }
+        if (next !== t) changed = true
+        return next
+      })
+      const linked = new Set(tasks.filter(t => t.linear).map(t => t.linear.id))
+      let nextTaskId = state.nextTaskId
+      let added = 0
+      for (const issue of issues) {
+        if (linked.has(issue.id) || dismissed.has(issue.id) || CLOSED_TYPES.has(issue.stateType)) continue
+        linked.add(issue.id)
+        tasks.push({
+          id: nextTaskId++, text: issue.title || issue.identifier, done: false, project: null,
+          linear: { id: issue.id, identifier: issue.identifier, url: issue.url }, linearPending: false,
+        })
+        added++
+      }
+      if (!changed && added === 0) return { state, effects }
+      if (added || completed) effects.push({ type: 'log', event: 'linear_sync', data: { added, completed } })
+      return { state: { ...state, tasks, nextTaskId }, effects }
     }
 
     case 'QUEUE_ADD': {
@@ -329,6 +399,7 @@ export function view(state, now, config) {
     graces: state.graces,
     countdownSeconds: config.countdownSeconds,
     graceMinutes: config.graceMinutes,
+    linearEnabled: Boolean(config.linearEnabled),
     nudging: nudgingOn(state, now),
     // Alias of `nudging` for an extension that has not been reloaded yet.
     nudgingPhase: nudgingOn(state, now),
@@ -361,6 +432,40 @@ function drainSavedLinks(state, effects) {
 // after a long day. Every path that can empty the list goes through here.
 function withTasks(state, tasks) {
   return { ...state, tasks, nextTaskId: tasks.length === 0 ? 1 : state.nextTaskId }
+}
+
+// Linear's closed state types. Duplicate is a team state of its own type here.
+const CLOSED_TYPES = new Set(['completed', 'canceled', 'duplicate'])
+
+function cleanLink(l) {
+  if (!l || typeof l.id !== 'string' || !l.id) return null
+  return { id: l.id, identifier: String(l.identifier ?? ''), url: String(l.url ?? '') }
+}
+
+function cleanIssue(i) {
+  const link = cleanLink(i)
+  if (!link) return null
+  return { ...link, title: String(i.title ?? '').trim(), stateType: String(i.stateType ?? '') }
+}
+
+function dismiss(state, ids) {
+  if (ids.length === 0) return state
+  const prior = state.linearDismissed ?? []
+  return { ...state, linearDismissed: [...prior, ...ids.filter(id => !prior.includes(id))] }
+}
+
+// Removing a task drops it in Linear too, so the two boards do not drift apart.
+// Only OPEN tasks: a ticked task is already Done there, and clearing it from this
+// list must not rewrite Done as Canceled. Dismissal still happens as well, so a
+// cancel that never reaches Linear cannot bring the task back on the next sync.
+function cancelOpenLinked(tasks, effects) {
+  for (const t of tasks) {
+    if (t.linear && !t.done) effects.push({ type: 'linearCancel', issueId: t.linear.id })
+  }
+}
+
+function dismissTasks(state, tasks) {
+  return dismiss(state, tasks.filter(t => t.linear).map(t => t.linear.id))
 }
 
 function normaliseSite(raw) {

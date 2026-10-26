@@ -198,3 +198,11 @@ test('focus off 90m keeps a running work block running', async () => {
   await focus('on')
   await focus('stop')
 })
+
+test('task --project against a daemon without Linear says so and adds nothing', async () => {
+  const { code, stderr } = await focus('task', 'no-linear-here', '--project', 'pcb')
+  assert.equal(code, 1)
+  assert.match(stderr, /Linear/)
+  const { stdout } = await focus('task')
+  assert.doesNotMatch(stdout, /no-linear-here/)
+})

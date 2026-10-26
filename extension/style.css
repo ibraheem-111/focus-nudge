@@ -47,6 +47,16 @@ input[type="text"] {
 }
 input[type="text"]::placeholder { color: var(--muted); }
 
+.new-task-row { display: flex; gap: 0.5rem; align-items: stretch; }
+.new-task-row input[type="text"] { flex: 1; min-width: 0; }
+.new-task-row select {
+  max-width: 40%; background: var(--panel); border: 1px solid var(--line);
+  color: var(--ink); border-radius: 6px; padding: 0 0.5rem; font: inherit; font-size: 0.85rem;
+}
+.new-task-row select[hidden] { display: none; }
+.task-linear { color: var(--muted); font-size: 0.8rem; white-space: nowrap; text-decoration: none; }
+a.task-linear:hover { color: var(--accent); text-decoration: underline; }
+
 .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1.5rem; }
 
 button {

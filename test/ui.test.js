@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { countdown, formatDuration, clockLine, renderTasks } from '../extension/ui.js'
+import { countdown, formatDuration, clockLine, renderTasks, fillProjects, chosenProject } from '../extension/ui.js'
 
 // renderTasks touches `document`, which does not exist under `node --test`. This
 // is a minimal stand-in: just enough of createElement/append/addEventListener
@@ -190,4 +190,75 @@ test('nudgingLine describes the nudging switch', async () => {
   assert.equal(nudgingLine({ nudging: false, nudgeOffIndefinite: false, nudgeOffUntil: 1_000 + 90 * 60_000, serverTime: 1_000 }),
     'nudging off — 1:30:00 left')
   assert.equal(nudgingLine(null), 'nudging unknown — no daemon')
+})
+
+const walk = node => [node, ...(node.children ?? []).flatMap(walk)]
+
+test('a linked task shows its Linear identifier as a link opening in a new tab', () => {
+  const el = makeTasksEl()
+  renderTasks(el, [{ id: 1, text: 'a', done: false, linear: { id: 'i', identifier: 'IBR-40', url: 'https://linear.app/x/IBR-40' } }])
+  const a = walk(el).find(n => n.tagName === 'a')
+  assert.ok(a, 'an anchor is rendered')
+  assert.equal(a.textContent, 'IBR-40')
+  assert.equal(a.href, 'https://linear.app/x/IBR-40')
+  assert.equal(a.target, '_blank')
+  assert.equal(a.rel, 'noopener')
+})
+
+test('an unlinked task has no link, and a pending one says it is waiting for Linear', () => {
+  const el = makeTasksEl()
+  renderTasks(el, [{ id: 1, text: 'a', done: false, linear: null, linearPending: true }, { id: 2, text: 'b', done: false }])
+  assert.equal(walk(el).some(n => n.tagName === 'a'), false)
+  const pending = walk(el).filter(n => n.className === 'task-linear pending')
+  assert.equal(pending.length, 1)
+})
+
+test('a link that is not http(s) is shown as text, never as a clickable href', () => {
+  const el = makeTasksEl()
+  renderTasks(el, [{ id: 1, text: 'a', done: false, linear: { id: 'i', identifier: 'IBR-1', url: 'javascript:alert(1)' } }])
+  assert.equal(walk(el).some(n => n.tagName === 'a'), false)
+  assert.ok(walk(el).some(n => n.textContent === 'IBR-1'))
+})
+
+test('renderTasks rebuilds when a task becomes linked', () => {
+  const el = makeTasksEl()
+  renderTasks(el, [{ id: 1, text: 'a', done: false, linear: null, linearPending: true }])
+  renderTasks(el, [{ id: 1, text: 'a', done: false, linear: { id: 'i', identifier: 'IBR-2', url: 'https://l/x' }, linearPending: false }])
+  assert.equal(el.replaceChildrenCalls, 2)
+})
+
+function makeSelect() {
+  return { hidden: false, value: '', children: [], replaceChildren(...n) { this.children = n } }
+}
+
+test('the project picker is hidden when Linear is off or the daemon is down', () => {
+  for (const linear of [{ enabled: false, projects: [] }, { down: true }, undefined]) {
+    const sel = makeSelect()
+    fillProjects(sel, linear)
+    assert.equal(sel.hidden, true)
+  }
+})
+
+test('the project picker lists the projects after a "no project" default', () => {
+  const sel = makeSelect()
+  fillProjects(sel, { enabled: true, projects: [{ id: 'p1', name: 'PCB Startup' }, { id: 'p2', name: 'Everything' }] })
+  assert.equal(sel.hidden, false)
+  assert.deepEqual(sel.children.map(o => [o.value, o.textContent]), [['', 'no project'], ['p1', 'PCB Startup'], ['p2', 'Everything']])
+})
+
+test('refilling the picker keeps the current choice', () => {
+  const sel = makeSelect()
+  const linear = { enabled: true, projects: [{ id: 'p1', name: 'PCB Startup' }] }
+  fillProjects(sel, linear)
+  sel.value = 'p1'
+  fillProjects(sel, linear)
+  assert.equal(sel.value, 'p1')
+})
+
+test('chosenProject maps the selection back to {id, name}', () => {
+  const projects = [{ id: 'p1', name: 'PCB Startup' }]
+  assert.deepEqual(chosenProject({ hidden: false, value: 'p1' }, projects), { id: 'p1', name: 'PCB Startup' })
+  assert.equal(chosenProject({ hidden: false, value: '' }, projects), undefined)
+  assert.equal(chosenProject({ hidden: true, value: 'p1' }, projects), undefined)
+  assert.equal(chosenProject({ hidden: false, value: 'gone' }, projects), undefined)
 })

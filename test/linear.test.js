@@ -142,3 +142,11 @@ test('loadLinearKey parses a .env file, ignoring comments and quotes', () => {
 test('loadLinearKey returns null when there is no key anywhere', () => {
   assert.equal(loadLinearKey({ env: {}, envFile: '/nonexistent/.env' }), null)
 })
+
+test('cancel moves the issue to the canceled state', async () => {
+  const fetch = fakeFetch(body =>
+    body.query.includes('states {') ? STATES : { data: { issueUpdate: { success: true } } })
+  await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).cancel('iss-1')
+  const update = fetch.calls.find(c => c.body.query.includes('issueUpdate'))
+  assert.deepEqual([update.body.variables.id, update.body.variables.stateId], ['iss-1', 's-cancel'])
+})

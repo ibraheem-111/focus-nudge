@@ -4,6 +4,11 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { loadConfig, saveConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
 import { initialState, reduce, settle, view, PHASE, LEGACY_SNOOZED } from './core.js'
+import { createLinear, loadLinearKey } from './linear.js'
+
+const LINEAR_TEAM_ID = '7c4547c3-9bfd-4235-9141-cb069ccb3762'
+const LINEAR_SYNC_MS = 60_000
+const LINEAR_PROJECTS_TTL_MS = 10 * 60_000
 
 const TIMER_ACTIONS = {
   start: 'START',
@@ -83,6 +88,9 @@ function shapeProblem(parsed) {
       (parsed.graces === null || typeof parsed.graces !== 'object' || Array.isArray(parsed.graces))) {
     return 'graces is not an object'
   }
+  if (parsed.linearDismissed !== undefined && !Array.isArray(parsed.linearDismissed)) {
+    return 'linearDismissed is not an array'
+  }
   if (parsed.phase !== undefined && !KNOWN_PHASES.has(parsed.phase)) {
     return `unknown phase ${JSON.stringify(parsed.phase)}`
   }
@@ -117,6 +125,12 @@ export function createServer(opts = {}) {
     config: opts.configPath ?? PATHS.config,
   }
   let config = opts.config ?? loadConfig()
+  // Linear is opt-in by construction: only the real daemon entry point below
+  // builds a client from the key. A test that passes no `linear` can never reach
+  // the real API, even when the repo's .env holds a key.
+  const linear = opts.linear ?? null
+  // What core.js sees. linearEnabled is not user config; it is whether a client exists.
+  const coreConfig = () => ({ ...config, linearEnabled: Boolean(linear) })
   const notify = opts.notify ?? desktopNotify
   const openUrls = opts.openUrls ?? (urls => urls.forEach(u => spawnDetached('xdg-open', [u])))
 
@@ -177,6 +191,9 @@ export function createServer(opts = {}) {
       if (e.type === 'notify') notify(e.title, e.body, e.sound)
       else if (e.type === 'log') appendLog(e.event, e.data)
       else if (e.type === 'openUrls') openUrls(e.urls)
+      else if (e.type === 'linearCreate') linearJob(() => createFor(e.taskId, e.text, e.projectId))
+      else if (e.type === 'linearSetDone') linearJob(() => linear.setDone(e.issueId, e.done))
+      else if (e.type === 'linearCancel') linearJob(() => linear.cancel(e.issueId))
       else if (e.type === 'setSites') {
         config = mergeConfig({ ...config, sites: e.sites })
         // saveConfig rather than a local mkdir + writeAtomic: this was the second
@@ -199,7 +216,7 @@ export function createServer(opts = {}) {
 
   // Applies time-driven changes. Called before every request and once a second.
   function tick(now = Date.now()) {
-    const result = settle(state, now, config)
+    const result = settle(state, now, coreConfig())
     if (result.effects.length || result.state !== state) {
       state = result.state
       runEffects(result.effects)
@@ -209,16 +226,73 @@ export function createServer(opts = {}) {
 
   function dispatch(action, now = Date.now()) {
     tick(now)
-    const result = reduce(state, action, now, config)
+    const result = reduce(state, action, now, coreConfig())
     state = result.state
     runEffects(result.effects)
     persist()
-    return { ...view(state, now, config), persisted: persistOk }
+    return { ...view(state, now, coreConfig()), persisted: persistOk }
   }
 
   function currentView(now = Date.now()) {
     tick(now)
-    return { ...view(state, now, config), persisted: persistOk }
+    return { ...view(state, now, coreConfig()), persisted: persistOk }
+  }
+
+  // --- Linear ------------------------------------------------------------------
+  // Every Linear call runs on ONE promise chain. Serial is the point: a sync that
+  // fetched the issue list while a create was still in flight would see the new
+  // issue unlinked and add it a second time.
+  let linearChain = Promise.resolve()
+  const linearErrors = new Map()   // message -> when it was last printed
+  const LINEAR_ERROR_QUIET_MS = 60 * 60_000
+
+  function linearJob(job) {
+    if (!linear) return linearChain
+    linearChain = linearChain.then(job).catch(err => {
+      // A network outage would otherwise print the same line every minute.
+      const msg = String(err?.message ?? err).replace(/^linear:\s*/, '')
+      const now = Date.now()
+      if (now - (linearErrors.get(msg) ?? -Infinity) < LINEAR_ERROR_QUIET_MS) return
+      linearErrors.set(msg, now)
+      console.error(`focus-nudge: linear: ${msg}`)
+    })
+    return linearChain
+  }
+
+  async function createFor(taskId, text, projectId) {
+    const still = state.tasks.find(t => t.id === taskId && t.text === text && t.linearPending)
+    if (!still) return   // removed, or linked by an earlier attempt
+    const issue = await linear.createIssue({ title: text, projectId })
+    dispatch({ type: 'TASK_LINKED', taskId, text, linear: issue })
+  }
+
+  // Retries what never reached Linear, then pulls Linear's view back in.
+  function linearSync() {
+    if (!linear) return linearChain
+    for (const t of state.tasks.filter(t => t.linearPending && !t.done)) {
+      linearJob(() => createFor(t.id, t.text, t.project?.id ?? null))
+    }
+    return linearJob(async () => {
+      const linkedIds = state.tasks.filter(t => t.linear).map(t => t.linear.id)
+      const issues = await linear.activeIssues(linkedIds)
+      dispatch({ type: 'LINEAR_SYNC', issues })
+    })
+  }
+
+  let projectsCache = null   // { at, projects }
+  async function linearProjects(now = Date.now()) {
+    if (!linear) return { enabled: false, projects: [] }
+    if (projectsCache && now - projectsCache.at < LINEAR_PROJECTS_TTL_MS) {
+      return { enabled: true, projects: projectsCache.projects }
+    }
+    try {
+      const projects = await linear.projects()
+      projectsCache = { at: now, projects }
+      return { enabled: true, projects }
+    } catch (err) {
+      // A stale list beats an empty picker; an empty one still lets a task be added.
+      return { enabled: true, projects: projectsCache?.projects ?? [], error: String(err.message) }
+    }
   }
 
   const server = http.createServer(async (req, res) => {
@@ -269,6 +343,7 @@ export function createServer(opts = {}) {
           // comes first — reporting ~0 blocks no matter the real history.
           return send(200, { ...currentView(), totals: summariseLog(text) })
         }
+        if (route === '/linear') return send(200, await linearProjects())
         return send(404, { error: 'not found' })
       }
 
@@ -298,7 +373,7 @@ export function createServer(opts = {}) {
             const map = { add: 'TASK_ADD', toggle: 'TASK_TOGGLE', remove: 'TASK_REMOVE', clear: 'TASK_CLEAR', clearDone: 'TASK_CLEAR_DONE' }
             const type = map[body.action]
             if (!type) return send(400, { error: 'unknown task action' })
-            return send(200, dispatch({ type, text: body.text, id: body.id }))
+            return send(200, dispatch({ type, text: body.text, id: body.id, project: body.project }))
           }
           case '/sites': {
             const map = { add: 'SITE_ADD', remove: 'SITE_REMOVE' }
@@ -325,22 +400,31 @@ export function createServer(opts = {}) {
   })
 
   let interval = null
+  let syncInterval = null
 
   return {
     server,
     dispatch,
     currentView,
+    linearSync,
+    // Resolves once every Linear call queued so far has finished.
+    linearIdle: () => linearChain,
     listen(port = config.port) {
       return new Promise((resolve, reject) => {
         server.once('error', reject)
         server.listen(port, '127.0.0.1', () => {
           interval = setInterval(() => tick(), 1000)
+          if (linear) {
+            linearSync()
+            syncInterval = setInterval(linearSync, LINEAR_SYNC_MS)
+          }
           resolve(server.address().port)
         })
       })
     },
     close() {
       if (interval) clearInterval(interval)
+      if (syncInterval) clearInterval(syncInterval)
       server.close()
     },
   }
@@ -432,7 +516,11 @@ function desktopNotify(title, body, sound) {
 
 // Started directly rather than imported by a test.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const handle = createServer()
+  const apiKey = loadLinearKey()
+  const handle = createServer({
+    linear: apiKey ? createLinear({ apiKey, teamId: LINEAR_TEAM_ID }) : null,
+  })
+  console.log(apiKey ? 'focus-nudge: Linear sync on' : 'focus-nudge: Linear sync off (no LINEAR_API_KEY)')
   const cfg = loadConfig()
   handle.listen(cfg.port).then(
     port => console.log(`focus-nudge listening on http://127.0.0.1:${port}`),

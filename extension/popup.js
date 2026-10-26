@@ -1,5 +1,5 @@
-import { getState, timer, nudgingOff, nudgingOn, task, site, queueDrain, isDown } from './api.js'
-import { clockLine, renderTasks, PHASE_LABEL, nudgingLine } from './ui.js'
+import { getState, timer, nudgingOff, nudgingOn, task, site, queueDrain, isDown, getLinear } from './api.js'
+import { clockLine, renderTasks, PHASE_LABEL, nudgingLine, fillProjects, chosenProject } from './ui.js'
 
 const el = id => document.getElementById(id)
 let latest = null
@@ -108,7 +108,14 @@ el('new-task').addEventListener('keydown', async e => {
   const text = e.target.value.trim()
   if (!text) return
   e.target.value = ''
-  render(await act(task('add', { text })))
+  render(await act(task('add', { text, project: chosenProject(el('new-task-project'), linearProjects) })))
+})
+
+// The Linear project picker. Filled once on open; the daemon caches the list.
+let linearProjects = []
+getLinear().then(linear => {
+  linearProjects = linear?.projects ?? []
+  fillProjects(el('new-task-project'), linear)
 })
 
 function showSiteError(message) {
