@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { PHASE, initialState, reduce, settle, view } from '../daemon/core.js'
+import { PHASE, initialState, reduce, settle, view, nudgingOn } from '../daemon/core.js'
 import { DEFAULTS } from '../daemon/config.js'
 
 const CFG = DEFAULTS
@@ -63,7 +63,6 @@ test('ADVANCE out of work logs block_completed, and nothing else does', () => {
   const notBlocks = [
     { ...initialState(), phase: PHASE.SHORT_BREAK, endsAt: T0 + 5 * MIN },
     { ...initialState(), phase: PHASE.LONG_BREAK, endsAt: T0 + 20 * MIN },
-    { ...initialState(), phase: PHASE.SNOOZED, endsAt: T0 + 60 * MIN },
     initialState(),
   ]
   for (const s of notBlocks) {
@@ -154,24 +153,6 @@ test('PAUSE pauses a short break too', () => {
   assert.equal(state.pausedRemainingMs, 4 * MIN)
 })
 
-// PAUSE used to apply to any phase with an endsAt, which included the two
-// sanctioned windows. Pausing one set endsAt to null, and settle's expiry
-// branches all require endsAt !== null — so the window never ended and nudging
-// was off permanently, across restarts. A sanctioned window is a stretch of wall
-// clock, not work: there is nothing there to pause.
-test('PAUSE while snoozed is a no-op, so the snooze can still expire', () => {
-  const snoozed = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
-  const { state, effects } = reduce(snoozed, { type: 'PAUSE' }, T0 + MIN, CFG)
-  assert.deepEqual(state, snoozed, 'the snooze is untouched')
-  assert.deepEqual(effects, [], 'and nothing is logged')
-  assert.equal(state.endsAt, T0 + 60 * MIN, 'endsAt is NOT cleared')
-
-  // The escape from the trap: expiry still fires afterwards.
-  const later = settle(state, T0 + 60 * MIN, CFG)
-  assert.equal(later.state.phase, PHASE.IDLE, 'the snooze still expires')
-  assert.equal(view(later.state, T0 + 60 * MIN, CFG).nudgingPhase, true, 'and nudging is back on')
-})
-
 test('PAUSE during a long break is a no-op, so the break can still expire', () => {
   const onBreak = reduce(initialState(), { type: 'BREAK_LONG' }, T0, CFG).state
   const { state, effects } = reduce(onBreak, { type: 'PAUSE' }, T0 + MIN, CFG)
@@ -182,15 +163,6 @@ test('PAUSE during a long break is a no-op, so the break can still expire', () =
   const later = settle(state, T0 + 20 * MIN, CFG)
   assert.equal(later.state.expiredNotified, true, 'the break still reaches its expiry notice')
   assert.ok(later.effects.some(e => e.type === 'notify'))
-})
-
-test('a paused snooze cannot be resurrected as a paused WORK block by START', () => {
-  // Belt and braces on the shape: with PAUSE refusing sanctioned phases, no
-  // path can leave phase SNOOZED with paused:true and endsAt:null.
-  const snoozed = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
-  const attempted = reduce(snoozed, { type: 'PAUSE' }, T0 + MIN, CFG).state
-  assert.equal(attempted.paused, false)
-  assert.equal(attempted.pausedRemainingMs, null)
 })
 
 test('STOP returns to idle and clears the cycle', () => {
@@ -209,83 +181,11 @@ test('an unknown action leaves the state untouched', () => {
   assert.deepEqual(effects, [])
 })
 
-test('SNOOZE enters the snoozed phase for the requested hours', () => {
-  const { state, effects } = reduce(initialState(), { type: 'SNOOZE', hours: 2 }, T0, CFG)
-  assert.equal(state.phase, PHASE.SNOOZED)
-  assert.equal(state.endsAt, T0 + 2 * 60 * MIN)
-  assert.ok(effects.some(e => e.type === 'notify'))
-})
-
-test('SNOOZE accepts fractional hours and rejects nonsense', () => {
-  assert.equal(reduce(initialState(), { type: 'SNOOZE', hours: 0.5 }, T0, CFG).state.endsAt, T0 + 30 * MIN)
-  const bad = reduce(initialState(), { type: 'SNOOZE', hours: -1 }, T0, CFG)
-  assert.equal(bad.state.phase, PHASE.IDLE, 'a negative snooze is ignored')
-  const nan = reduce(initialState(), { type: 'SNOOZE', hours: 'soon' }, T0, CFG)
-  assert.equal(nan.state.phase, PHASE.IDLE)
-})
-
-test('SNOOZE ends the cycle on entry, like a long break', () => {
-  // Both sanctioned windows (LONG_BREAK, SNOOZED) end the cycle. Doing it on
-  // entry rather than on expiry is what keeps the dashboard honest.
-  const midCycle = { ...initialState(), phase: PHASE.WORK, endsAt: T0 + MIN, blocksCompleted: 2 }
-  const { state } = reduce(midCycle, { type: 'SNOOZE', hours: 2 }, T0, CFG)
-  assert.equal(state.phase, PHASE.SNOOZED)
-  assert.equal(state.blocksCompleted, 0, 'the cycle ends when the snooze begins')
-})
-
-test('snooze expiry changes nothing the user can see except the phase', () => {
-  let s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
-  s = { ...s, tasks: [{ id: 1, text: 'survive me', done: false }], nextTaskId: 2, graces: { 'reddit.com': T0 + 90 * MIN } }
-  const { state } = settle(s, T0 + 60 * MIN, CFG)
-  assert.equal(state.phase, PHASE.IDLE)
-  assert.deepEqual(state.tasks, [{ id: 1, text: 'survive me', done: false }], 'tasks survive')
-  assert.equal(state.nextTaskId, 2, 'task ids do not rewind')
-  assert.equal(state.graces['reddit.com'], T0 + 90 * MIN, 'an unexpired grace survives')
-  assert.equal(state.blocksCompleted, 0, 'already 0 from entry — nothing silently lost here')
-})
-
-// Refusing to pause a sanctioned window stops the trap being SET, but it does
-// nothing for a state.json that already holds one — that file outlives the fix,
-// and settle could never expire it because every expiry branch needs an endsAt.
-// A sanctioned phase with no end is unreachable by any legitimate path (SNOOZE
-// and BREAK_LONG both always set a finite endsAt), so encountering one can only
-// mean the old bug wrote it, and the only safe reading is "over".
-test('settle frees a snooze that was already trapped with no endsAt', () => {
-  const trapped = {
-    ...initialState(),
-    phase: PHASE.SNOOZED,
-    endsAt: null,
-    paused: true,
-    pausedRemainingMs: 3_540_000,
-    tasks: [{ id: 1, text: 'survive me', done: false }],
-    nextTaskId: 2,
-  }
-  const { state, effects } = settle(trapped, T0, CFG)
-  assert.equal(state.phase, PHASE.IDLE, 'the dead snooze is released')
-  assert.equal(state.paused, false)
-  assert.equal(state.pausedRemainingMs, null)
-  assert.equal(view(state, T0, CFG).nudgingPhase, true, 'and nudging is back on')
-  assert.deepEqual(state.tasks, [{ id: 1, text: 'survive me', done: false }], 'tasks survive the rescue')
-  assert.equal(state.nextTaskId, 2)
-  assert.ok(effects.some(e => e.type === 'notify'), 'the user is told, not silently changed under them')
-})
-
 test('settle frees a long break that was already trapped with no endsAt', () => {
   const trapped = { ...initialState(), phase: PHASE.LONG_BREAK, endsAt: null, paused: true, pausedRemainingMs: 60_000 }
   const { state } = settle(trapped, T0, CFG)
   assert.equal(state.phase, PHASE.IDLE)
   assert.equal(view(state, T0, CFG).nudgingPhase, true)
-})
-
-test('the rescue does not touch a sanctioned window that still has an end', () => {
-  // It must only fire on the impossible shape, never shorten a real snooze.
-  const live = reduce(initialState(), { type: 'SNOOZE', hours: 2 }, T0, CFG).state
-  const { state, effects } = settle(live, T0 + 60 * MIN, CFG)
-  assert.equal(state.phase, PHASE.SNOOZED, 'a running snooze is left alone')
-  assert.deepEqual(effects, [])
-
-  const onBreak = reduce(initialState(), { type: 'BREAK_LONG' }, T0, CFG).state
-  assert.equal(settle(onBreak, T0 + MIN, CFG).state.phase, PHASE.LONG_BREAK)
 })
 
 test('a legitimately paused WORK block is never mistaken for the trap', () => {
@@ -297,16 +197,6 @@ test('a legitimately paused WORK block is never mistaken for the trap', () => {
   const { state, effects } = settle(s, T0 + 99 * MIN, CFG)
   assert.deepEqual(state, s, 'a paused work block is untouched no matter how long it sits')
   assert.deepEqual(effects, [])
-})
-
-test('settle returns snooze to idle once it expires', () => {
-  const s = reduce(initialState(), { type: 'SNOOZE', hours: 1 }, T0, CFG).state
-  const before = settle(s, T0 + 59 * MIN, CFG)
-  assert.equal(before.state.phase, PHASE.SNOOZED, 'still snoozed a minute early')
-
-  const after = settle(s, T0 + 60 * MIN, CFG)
-  assert.equal(after.state.phase, PHASE.IDLE, 'expires exactly on the boundary')
-  assert.ok(after.effects.some(e => e.type === 'notify'))
 })
 
 test('settle never auto-advances a work block', () => {
@@ -550,38 +440,6 @@ test('QUEUE_ADD requires a url', () => {
   assert.deepEqual(s.queue, [])
 })
 
-test('BREAK_LONG opens the queue and leaves the task list alone', () => {
-  // This test previously asserted the opposite — that a long break cleared the
-  // list. That was a real bug reported after two weeks of use: a break does not
-  // complete your work, so nothing here may delete it. Changed deliberately.
-  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'still to do' }, T0, CFG).state
-  s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
-
-  const { state, effects } = reduce(s, { type: 'BREAK_LONG' }, T0, CFG)
-  assert.equal(state.phase, PHASE.LONG_BREAK)
-  assert.equal(state.endsAt, T0 + 20 * MIN)
-  assert.deepEqual(state.tasks.map(t => t.text), ['still to do'], 'the task survives the break')
-  assert.deepEqual(state.queue, [], 'the queue still drains')
-
-  const open = effects.find(e => e.type === 'openUrls')
-  assert.deepEqual(open.urls, ['https://reddit.com/r/x'])
-  assert.equal(effects.some(e => e.event === 'tasks_archived'), false, 'nothing is archived any more')
-})
-
-test('snoozing does not delete micro-tasks', () => {
-  // The bug the author hit: `focus off 2h` for a meeting wiped the whole list.
-  // Ten of eleven archive events in two weeks of real logs were snooze-triggered.
-  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'fix the auth redirect' }, T0, CFG).state
-  s = reduce(s, { type: 'TASK_ADD', text: 'reply to Nick' }, T0, CFG).state
-  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
-
-  const { state } = reduce(s, { type: 'SNOOZE', hours: 2 }, T0, CFG)
-  assert.equal(state.phase, PHASE.SNOOZED)
-  assert.deepEqual(state.tasks.map(t => t.text), ['fix the auth redirect', 'reply to Nick'])
-  assert.equal(state.tasks[0].done, true, 'done flags survive too')
-  assert.equal(state.nextTaskId, 3, 'and the numbering is not reset')
-})
-
 test('the automatic long break after four blocks also spares the tasks', () => {
   let s = reduce(initialState(), { type: 'TASK_ADD', text: 'carry me across the cycle' }, T0, CFG).state
   s = { ...s, phase: PHASE.WORK, endsAt: T0 + MIN, blocksCompleted: 3 }
@@ -600,15 +458,6 @@ test('snoozing also drains the queue', () => {
 test('an empty queue produces no openUrls effect', () => {
   const { effects } = reduce(initialState(), { type: 'BREAK_LONG' }, T0, CFG)
   assert.equal(effects.some(e => e.type === 'openUrls'), false)
-})
-
-test('the automatic long break after four blocks also drains the queue', () => {
-  let s = reduce(initialState(), { type: 'QUEUE_ADD', url: 'https://reddit.com/r/z', title: 'z' }, T0, CFG).state
-  s = { ...s, blocksCompleted: 3, phase: PHASE.WORK, endsAt: T0 + MIN }
-  const { state, effects } = reduce(s, { type: 'ADVANCE' }, T0, CFG)
-  assert.equal(state.phase, PHASE.LONG_BREAK)
-  assert.deepEqual(state.queue, [])
-  assert.deepEqual(effects.find(e => e.type === 'openUrls').urls, ['https://reddit.com/r/z'])
 })
 
 test('QUEUE_DRAIN empties the queue without changing phase', () => {
@@ -710,12 +559,6 @@ test('view reports null remaining while idle', () => {
   assert.equal(v.nudgingPhase, true, 'idle still nudges')
 })
 
-test('view marks the sanctioned phases as not nudging', () => {
-  assert.equal(view({ ...initialState(), phase: PHASE.LONG_BREAK }, T0, CFG).nudgingPhase, false)
-  assert.equal(view({ ...initialState(), phase: PHASE.SNOOZED }, T0, CFG).nudgingPhase, false)
-  assert.equal(view({ ...initialState(), phase: PHASE.SHORT_BREAK }, T0, CFG).nudgingPhase, true)
-})
-
 test('view counts open tasks and queue depth', () => {
   let s = reduce(initialState(), { type: 'TASK_ADD', text: 'a' }, T0, CFG).state
   s = reduce(s, { type: 'TASK_ADD', text: 'b' }, T0, CFG).state
@@ -725,4 +568,176 @@ test('view counts open tasks and queue depth', () => {
   assert.equal(v.openTaskCount, 1)
   assert.equal(v.tasks.length, 2)
   assert.equal(v.queueDepth, 1)
+})
+
+// ---------------------------------------------------------------------------
+// Nudging is a switch, independent of the pomodoro timer.
+//
+// These replace the tests that pinned SNOOZED as a phase. That design made
+// "nudging off" and "a work block is running" mutually exclusive: snoozing
+// ended the block and zeroed the cycle. Real use showed 196 snoozes against 27
+// completed blocks, 11 of them cut short by a snooze — much of the author's work
+// is on YouTube and Reddit. The user asked for two independent switches.
+// ---------------------------------------------------------------------------
+
+test('NUDGE_OFF keeps a running work block running', () => {
+  let s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  s = { ...s, blocksCompleted: 2 }
+  const { state } = reduce(s, { type: 'NUDGE_OFF', hours: 1 }, T0 + 5 * MIN, CFG)
+  assert.equal(state.phase, PHASE.WORK, 'the block is still running')
+  assert.equal(state.endsAt, T0 + 25 * MIN, 'with its original end')
+  assert.equal(state.blocksCompleted, 2, 'and the cycle count is kept')
+  assert.equal(state.nudgeOffUntil, T0 + 65 * MIN)
+  assert.equal(view(state, T0 + 6 * MIN, CFG).nudging, false)
+})
+
+test('SNOOZE is an alias of NUDGE_OFF and no longer touches the timer', () => {
+  const working = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  const { state } = reduce(working, { type: 'SNOOZE', hours: 2 }, T0, CFG)
+  assert.equal(state.phase, PHASE.WORK)
+  assert.equal(state.nudgeOffUntil, T0 + 120 * MIN)
+})
+
+test('NUDGE_OFF accepts fractional hours and rejects nonsense', () => {
+  assert.equal(reduce(initialState(), { type: 'NUDGE_OFF', hours: 0.5 }, T0, CFG).state.nudgeOffUntil, T0 + 30 * MIN)
+  for (const hours of [0, -1, 'soon', undefined, Infinity]) {
+    const out = reduce(initialState(), { type: 'NUDGE_OFF', hours }, T0, CFG)
+    assert.deepEqual(out.state, initialState(), `hours=${String(hours)} is ignored`)
+    assert.deepEqual(out.effects, [])
+  }
+})
+
+test('NUDGE_OFF indefinite stays off until NUDGE_ON', () => {
+  let s = reduce(initialState(), { type: 'NUDGE_OFF', indefinite: true }, T0, CFG).state
+  assert.equal(s.nudgeOffIndefinite, true)
+  assert.equal(s.nudgeOffUntil, null)
+  const later = settle(s, T0 + 1000 * 60 * MIN, CFG)
+  assert.equal(nudgingOn(later.state, T0 + 1000 * 60 * MIN), false, 'never expires on its own')
+  assert.deepEqual(later.effects, [])
+
+  const { state, effects } = reduce(s, { type: 'NUDGE_ON' }, T0 + MIN, CFG)
+  assert.equal(nudgingOn(state, T0 + MIN), true)
+  assert.equal(state.nudgeOffIndefinite, false)
+  assert.ok(effects.some(e => e.type === 'log' && e.event === 'nudge_on' && e.data.reason === 'user'))
+})
+
+test('a timed NUDGE_OFF expires in settle, silently', () => {
+  const s = reduce(initialState(), { type: 'NUDGE_OFF', hours: 1 }, T0, CFG).state
+  const early = settle(s, T0 + 59 * MIN, CFG)
+  assert.equal(nudgingOn(early.state, T0 + 59 * MIN), false, 'still off a minute early')
+  assert.deepEqual(early.effects, [])
+
+  const { state, effects } = settle(s, T0 + 60 * MIN, CFG)
+  assert.equal(state.nudgeOffUntil, null, 'cleared exactly on the boundary')
+  assert.equal(view(state, T0 + 60 * MIN, CFG).nudging, true)
+  const note = effects.find(e => e.type === 'notify')
+  assert.equal(note.title, 'Nudging back on')
+  assert.equal('sound' in note, false, 'only phase expiry makes a sound')
+  assert.ok(effects.some(e => e.type === 'log' && e.event === 'nudge_on' && e.data.reason === 'expired'))
+})
+
+test('NUDGE_OFF logs its duration so the insights page can chart it', () => {
+  const timed = reduce(initialState(), { type: 'NUDGE_OFF', hours: 2 }, T0, CFG).effects
+  assert.ok(timed.some(e => e.event === 'nudge_off' && e.data.hours === 2 && e.data.indefinite === false))
+  const open = reduce(initialState(), { type: 'NUDGE_OFF', indefinite: true }, T0, CFG).effects
+  assert.ok(open.some(e => e.event === 'nudge_off' && e.data.hours === null && e.data.indefinite === true))
+})
+
+test('NUDGE_ON while already on changes nothing and logs nothing', () => {
+  const { state, effects } = reduce(initialState(), { type: 'NUDGE_ON' }, T0, CFG)
+  assert.deepEqual(state, initialState())
+  assert.deepEqual(effects, [])
+})
+
+test('the timer never changes whether sites nudge', () => {
+  const phases = [
+    initialState(),
+    { ...initialState(), phase: PHASE.WORK, endsAt: T0 + MIN },
+    { ...initialState(), phase: PHASE.SHORT_BREAK, endsAt: T0 + MIN },
+    { ...initialState(), phase: PHASE.LONG_BREAK, endsAt: T0 + MIN },
+  ]
+  for (const s of phases) {
+    assert.equal(view(s, T0, CFG).nudging, true, `${s.phase} nudges when nudging is on`)
+    assert.equal(view(s, T0, CFG).nudgingPhase, true, 'nudgingPhase mirrors nudging for older clients')
+    const off = reduce(s, { type: 'NUDGE_OFF', hours: 1 }, T0, CFG).state
+    assert.equal(view(off, T0, CFG).nudging, false, `${s.phase} does not nudge when nudging is off`)
+    assert.equal(off.phase, s.phase, 'and the phase is untouched')
+  }
+})
+
+test('NUDGE_OFF drains the saved-links queue and spares the tasks', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'fix the auth redirect' }, T0, CFG).state
+  s = reduce(s, { type: 'TASK_TOGGLE', id: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/r/y', title: 'y' }, T0, CFG).state
+  const { state, effects } = reduce(s, { type: 'NUDGE_OFF', hours: 2 }, T0, CFG)
+  assert.deepEqual(state.queue, [])
+  assert.deepEqual(effects.find(e => e.type === 'openUrls').urls, ['https://reddit.com/r/y'])
+  assert.deepEqual(state.tasks.map(t => [t.text, t.done]), [['fix the auth redirect', true]])
+  assert.equal(state.nextTaskId, 2)
+})
+
+// Replaces 'BREAK_LONG opens the queue...' and 'the automatic long break after
+// four blocks also drains the queue'. A long break no longer opens watched sites,
+// so draining links that are almost all watched sites into it would open them
+// straight into pause screens. The queue now drains when nudging is switched off.
+test('a long break no longer drains the queue, and still leaves the tasks alone', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'still to do' }, T0, CFG).state
+  s = reduce(s, { type: 'QUEUE_ADD', url: 'https://reddit.com/r/x', title: 'x' }, T0, CFG).state
+  const manual = reduce(s, { type: 'BREAK_LONG' }, T0, CFG)
+  assert.equal(manual.state.phase, PHASE.LONG_BREAK)
+  assert.equal(manual.state.queue.length, 1)
+  assert.equal(manual.effects.some(e => e.type === 'openUrls'), false)
+  assert.deepEqual(manual.state.tasks.map(t => t.text), ['still to do'])
+
+  const auto = reduce({ ...s, phase: PHASE.WORK, endsAt: T0 + MIN, blocksCompleted: 3 }, { type: 'ADVANCE' }, T0, CFG)
+  assert.equal(auto.state.phase, PHASE.LONG_BREAK)
+  assert.equal(auto.state.queue.length, 1)
+  assert.equal(auto.effects.some(e => e.type === 'openUrls'), false)
+})
+
+test('settle migrates a stored SNOOZED phase into a nudge-off, keeping everything', () => {
+  // The live state.json holds exactly this shape when the new daemon first starts.
+  const legacy = {
+    ...initialState(),
+    phase: 'SNOOZED',
+    endsAt: T0 + 30 * MIN,
+    tasks: [{ id: 1, text: 'survive me', done: false }],
+    nextTaskId: 2,
+    queue: [{ url: 'https://reddit.com/r/q', title: 'q', savedAt: T0 }],
+  }
+  const { state, effects } = settle(legacy, T0, CFG)
+  assert.equal(state.phase, PHASE.IDLE)
+  assert.equal(state.endsAt, null)
+  assert.equal(state.nudgeOffUntil, T0 + 30 * MIN, 'the snooze the user was in is honoured')
+  assert.equal(nudgingOn(state, T0), false)
+  assert.deepEqual(state.tasks, legacy.tasks)
+  assert.equal(state.nextTaskId, 2)
+  assert.deepEqual(state.queue, legacy.queue, 'the queue is not drained a second time')
+  assert.equal(effects.some(e => e.type === 'notify'), false, 'a silent migration')
+})
+
+test('a stored SNOOZED phase with no end migrates to nudging on', () => {
+  const trapped = { ...initialState(), phase: 'SNOOZED', endsAt: null, paused: true, pausedRemainingMs: 60_000 }
+  const { state } = settle(trapped, T0, CFG)
+  assert.equal(state.phase, PHASE.IDLE)
+  assert.equal(state.paused, false)
+  assert.equal(nudgingOn(state, T0), true)
+})
+
+test('an expired stored SNOOZED phase migrates to nudging on', () => {
+  const old = { ...initialState(), phase: 'SNOOZED', endsAt: T0 - MIN }
+  const { state } = settle(old, T0, CFG)
+  assert.equal(state.phase, PHASE.IDLE)
+  assert.equal(nudgingOn(state, T0), true)
+})
+
+test('PAUSE does not touch nudging, and nudging changes do not touch a pause', () => {
+  let s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  s = reduce(s, { type: 'NUDGE_OFF', hours: 1 }, T0, CFG).state
+  s = reduce(s, { type: 'PAUSE' }, T0 + 10 * MIN, CFG).state
+  assert.equal(s.paused, true)
+  assert.equal(s.nudgeOffUntil, T0 + 60 * MIN)
+  s = reduce(s, { type: 'NUDGE_ON' }, T0 + 11 * MIN, CFG).state
+  assert.equal(s.paused, true, 'still paused')
+  assert.equal(s.pausedRemainingMs, 15 * MIN)
 })

@@ -5,8 +5,13 @@ export const PHASE = {
   WORK: 'WORK',
   SHORT_BREAK: 'SHORT_BREAK',
   LONG_BREAK: 'LONG_BREAK',
-  SNOOZED: 'SNOOZED',
 }
+
+// SNOOZED used to be a phase, which made "nudging off" and "a work block is
+// running" mutually exclusive. Nudging is now its own switch (nudgeOffUntil /
+// nudgeOffIndefinite). The string survives only so settle can migrate a
+// state.json written by the old daemon.
+export const LEGACY_SNOOZED = 'SNOOZED'
 
 const MIN = 60_000
 
@@ -22,7 +27,15 @@ export function initialState() {
     nextTaskId: 1,
     queue: [],
     graces: {},
+    nudgeOffUntil: null,
+    nudgeOffIndefinite: false,
   }
+}
+
+// Nudging is ON unless the user switched it off. The timer plays no part.
+export function nudgingOn(state, now) {
+  if (state.nudgeOffIndefinite) return false
+  return !(typeof state.nudgeOffUntil === 'number' && now < state.nudgeOffUntil)
 }
 
 export function phaseDurationMs(phase, config) {
@@ -38,7 +51,6 @@ const LABEL = {
   [PHASE.WORK]: 'Work block',
   [PHASE.SHORT_BREAK]: 'Short break',
   [PHASE.LONG_BREAK]: 'Long break',
-  [PHASE.SNOOZED]: 'Snoozed',
   [PHASE.IDLE]: 'Idle',
 }
 
@@ -107,8 +119,7 @@ export function reduce(state, action, now, config) {
         toPhase = PHASE.WORK
       }
 
-      let next = { ...enter(state, toPhase, now, config), blocksCompleted: banked }
-      if (toPhase === PHASE.LONG_BREAK) next = drainSavedLinks(next, effects)
+      const next = { ...enter(state, toPhase, now, config), blocksCompleted: banked }
 
       effects.push({
         type: 'notify',
@@ -141,29 +152,37 @@ export function reduce(state, action, now, config) {
       }
     }
 
-    case 'SNOOZE': {
+    case 'SNOOZE':
+    case 'NUDGE_OFF': {
+      // Switches nudging off and nothing else. A running block keeps running and
+      // the cycle count is kept: the timer and the nudge are independent.
+      const indefinite = action.indefinite === true
       const hours = Number(action.hours)
-      if (!Number.isFinite(hours) || hours <= 0) return { state, effects }
+      if (!indefinite && !(Number.isFinite(hours) && hours > 0)) return { state, effects }
       const next = {
         ...state,
-        phase: PHASE.SNOOZED,
-        endsAt: now + hours * 60 * MIN,
-        paused: false,
-        pausedRemainingMs: null,
-        expiredNotified: false,
-        // A snooze is a sanctioned window, exactly like a long break, so it
-        // ends the cycle the same way BREAK_LONG does. Resetting on entry
-        // rather than on expiry matters: otherwise the dashboard shows
-        // "block 2 of 4" for the whole snooze and then silently zeroes it.
-        blocksCompleted: 0,
+        nudgeOffUntil: indefinite ? null : now + hours * 60 * MIN,
+        nudgeOffIndefinite: indefinite,
       }
       effects.push({
         type: 'notify',
         title: 'Nudging off',
-        body: `Back on in ${hours} hour${hours === 1 ? '' : 's'}.`,
+        body: indefinite
+          ? 'Until you turn it back on. Your timer is unaffected.'
+          : `Back on in ${hours} hour${hours === 1 ? '' : 's'}. Your timer is unaffected.`,
       })
-      effects.push({ type: 'log', event: 'snooze', data: { hours } })
+      effects.push({
+        type: 'log',
+        event: 'nudge_off',
+        data: { hours: indefinite ? null : hours, indefinite },
+      })
       return { state: drainSavedLinks(next, effects), effects }
+    }
+
+    case 'NUDGE_ON': {
+      if (nudgingOn(state, now)) return { state, effects }
+      effects.push({ type: 'log', event: 'nudge_on', data: { reason: 'user' } })
+      return { state: { ...state, nudgeOffUntil: null, nudgeOffIndefinite: false }, effects }
     }
 
     case 'GRACE': {
@@ -177,11 +196,13 @@ export function reduce(state, action, now, config) {
     }
 
     case 'BREAK_LONG': {
-      const next = drainSavedLinks(enter(state, PHASE.LONG_BREAK, now, config), effects)
+      // A long break no longer opens watched sites or drains the saved links —
+      // only switching nudging off does. See NUDGE_OFF.
+      const next = enter(state, PHASE.LONG_BREAK, now, config)
       effects.push({
         type: 'notify',
         title: 'Long break',
-        body: `${minutes(phaseDurationMs(PHASE.LONG_BREAK, config))} minutes. Sites are open.`,
+        body: `${minutes(phaseDurationMs(PHASE.LONG_BREAK, config))} minutes.`,
       })
       effects.push({ type: 'log', event: 'phase', data: { phase: PHASE.LONG_BREAK, from: state.phase } })
       return { state: { ...next, blocksCompleted: 0 }, effects }
@@ -282,6 +303,9 @@ export function openCount(state) {
   return state.tasks.filter(t => !t.done).length
 }
 
+// The phases the OLD daemon nudged in. Kept because extension/policy.js still
+// falls back to this rule against a daemon too old to report `nudging`, and a
+// drift test keeps the two copies equal.
 export const NUDGING_PHASES = new Set([PHASE.IDLE, PHASE.WORK, PHASE.SHORT_BREAK])
 
 export function view(state, now, config) {
@@ -305,14 +329,16 @@ export function view(state, now, config) {
     graces: state.graces,
     countdownSeconds: config.countdownSeconds,
     graceMinutes: config.graceMinutes,
-    nudgingPhase: NUDGING_PHASES.has(state.phase),
+    nudging: nudgingOn(state, now),
+    // Alias of `nudging` for an extension that has not been reloaded yet.
+    nudgingPhase: nudgingOn(state, now),
+    nudgeOffUntil: state.nudgeOffIndefinite ? null : state.nudgeOffUntil ?? null,
+    nudgeOffIndefinite: Boolean(state.nudgeOffIndefinite),
     serverTime: now,
   }
 }
 
-// Entering a sanctioned window (long break or snooze) archives the task list
-// and drains the saved-links queue.
-// Draining the saved-links queue is all this does.
+// Switching nudging off drains the saved-links queue. That is all this does.
 //
 // It used to archive and clear the task list as well, on the reasoning that
 // LONG_BREAK and SNOOZED are both "sanctioned windows" and should behave
@@ -355,29 +381,42 @@ function normaliseSite(raw) {
 
 const EXPIRING_PHASES = new Set([PHASE.WORK, PHASE.SHORT_BREAK, PHASE.LONG_BREAK])
 
-const SANCTIONED_PHASES = new Set([PHASE.LONG_BREAK, PHASE.SNOOZED])
-
 export function settle(state, now, config) {
   const effects = []
   let next = state
 
-  // A sanctioned window with no end cannot be reached legitimately: SNOOZE and
-  // BREAK_LONG both always set a finite endsAt. It only exists in a state.json
-  // written by the old PAUSE bug, which cleared endsAt and so made every expiry
-  // branch below unreachable — nudging off permanently, surviving restarts.
-  // Refusing to pause those phases stops the trap being set, but does nothing for
-  // a file that already holds one, and the escape hatch has to work for those too.
-  // The only safe reading of a window with no end is that it is over.
-  if (SANCTIONED_PHASES.has(next.phase) && next.endsAt === null) {
-    next = { ...initialState(), tasks: next.tasks, nextTaskId: next.nextTaskId, queue: next.queue, graces: next.graces }
-    effects.push({ type: 'notify', title: 'Nudging back on', body: 'Recovered an interrupted break.' })
+  // A state.json written by the old daemon can hold phase SNOOZED. Carry the
+  // snooze over as a nudge-off until the same moment, silently: the user is
+  // mid-snooze, nothing they did changed. A SNOOZED with no end can only be the
+  // old PAUSE bug's trap, and the only safe reading of that is "over".
+  if (next.phase === LEGACY_SNOOZED) {
+    const until = typeof next.endsAt === 'number' && next.endsAt > now ? next.endsAt : null
+    next = {
+      ...next,
+      phase: PHASE.IDLE,
+      endsAt: null,
+      paused: false,
+      pausedRemainingMs: null,
+      expiredNotified: false,
+      nudgeOffUntil: until,
+      nudgeOffIndefinite: false,
+    }
+    effects.push({ type: 'log', event: 'snooze_migrated', data: { until } })
+  }
+
+  // A long break with no end cannot be reached legitimately (BREAK_LONG always
+  // sets a finite endsAt). It only exists in a state.json written by the old
+  // PAUSE bug, which made every expiry branch below unreachable. Treat it as over.
+  if (next.phase === PHASE.LONG_BREAK && next.endsAt === null) {
+    next = { ...enter(next, PHASE.IDLE, now, config), blocksCompleted: 0 }
+    effects.push({ type: 'notify', title: 'Long break cleared', body: 'Recovered an interrupted break.' })
     effects.push({ type: 'log', event: 'sanctioned_window_recovered', data: { from: state.phase } })
   }
 
-  if (next.phase === PHASE.SNOOZED && next.endsAt !== null && now >= next.endsAt) {
-    next = { ...initialState(), tasks: next.tasks, nextTaskId: next.nextTaskId, queue: next.queue, graces: next.graces }
-    effects.push({ type: 'notify', title: 'Nudging back on', body: 'Snooze finished.' })
-    effects.push({ type: 'log', event: 'snooze_end', data: {} })
+  if (!next.nudgeOffIndefinite && typeof next.nudgeOffUntil === 'number' && now >= next.nudgeOffUntil) {
+    next = { ...next, nudgeOffUntil: null }
+    effects.push({ type: 'notify', title: 'Nudging back on', body: 'Your nudge-off time is up.' })
+    effects.push({ type: 'log', event: 'nudge_on', data: { reason: 'expired' } })
   }
 
   if (
