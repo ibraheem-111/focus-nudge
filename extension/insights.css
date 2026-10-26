@@ -1,0 +1,74 @@
+/* The insights page. Colours are the extension's own surfaces plus a data
+   palette validated (dataviz validate_palette.js, dark, surface #1b1815, all
+   pairs) for the three series this page ever shows together. */
+:root {
+  --series-blocks: #3987e5;
+  --series-continued: #d95926;
+  --series-off: #199e70;
+  --heat-0: #2e2823;
+  --heat-1: #184f95;
+  --heat-2: #256abf;
+  --heat-3: #3987e5;
+  --heat-4: #86b6ef;
+}
+
+.wrap.wide { max-width: 68rem; }
+.ins-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.ins-head h1 { font-size: 1.4rem; font-weight: 600; margin: 0; }
+.ins-range { color: var(--muted); font-size: 0.85rem; display: flex; gap: 0.5rem; align-items: center; }
+.ins-range select, .card details summary {
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.3rem 0.5rem; font: inherit; font-size: 0.85rem;
+}
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.25rem, 1fr)); gap: 0.75rem; margin: 1rem 0 1.25rem; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 0.9rem; }
+.kpi .label { color: var(--muted); font-size: 0.78rem; }
+.kpi .value { font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; margin: 0.2rem 0 0.1rem; }
+.kpi .sub { color: var(--muted); font-size: 0.75rem; }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; margin-bottom: 1rem; min-width: 0; }
+.card h2 { font-size: 0.95rem; font-weight: 600; margin: 0 0 0.6rem; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+.grid2 .card, .grid3 .card { margin-bottom: 0; }
+.grid2, .grid3 { margin-bottom: 1rem; }
+
+.chart { width: 100%; overflow-x: auto; }
+.chart svg { display: block; }
+.chart text { fill: var(--muted); font-size: 10px; font-family: inherit; }
+.gridline { stroke: var(--line); stroke-width: 1; }
+.hit { fill: transparent; }
+.hit:hover { fill: rgba(236, 230, 221, 0.05); }
+
+.legend { display: flex; gap: 1rem; flex-wrap: wrap; color: var(--muted); font-size: 0.78rem; margin: 0 0 0.5rem; }
+.legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.swatch { width: 0.7rem; height: 0.7rem; border-radius: 3px; display: inline-block; }
+
+.hbars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 0.45rem 0.6rem; align-items: center; font-size: 0.85rem; }
+.hbars .name { color: var(--ink); }
+.hbars .val { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.hbar { height: 0.7rem; border-radius: 0 4px 4px 0; background: var(--series-blocks); min-width: 3px; }
+.hbar.continued { background: var(--series-continued); }
+.hbar.off { background: var(--series-off); }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+table.data th { color: var(--muted); font-weight: 500; text-align: right; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data td { text-align: right; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
+table.data td.barcell { width: 30%; }
+.card details { margin-top: 0.6rem; }
+.card details summary { display: inline-block; cursor: pointer; color: var(--muted); }
+
+.note { color: var(--muted); font-size: 0.75rem; margin: 0.6rem 0 0; }
+
+.tip {
+  position: fixed; z-index: 10; pointer-events: none; max-width: 16rem;
+  background: #0b0a09; border: 1px solid var(--line); border-radius: 6px;
+  padding: 0.4rem 0.55rem; font-size: 0.78rem; line-height: 1.35; white-space: pre-line;
+}
+
+@media (max-width: 30rem) {
+  .wrap.wide { padding: 1rem; }
+  .grid2, .grid3 { grid-template-columns: 1fr; }
+}

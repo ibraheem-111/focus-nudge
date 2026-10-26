@@ -1,5 +1,5 @@
 import { BUNDLED_QUOTES, pickQuote } from './quotes.js'
-import { getState, getQuotes, grace, queueAdd, task, isDown } from './api.js'
+import { getState, getQuotes, grace, queueAdd, task, isDown, reportNudge } from './api.js'
 import { clockLine, renderTasks, PHASE_LABEL, countdown } from './ui.js'
 import { matchSite, FALLBACK_GRACE_MINUTES } from './policy.js'
 
@@ -140,7 +140,14 @@ function goBack() {
   chrome.runtime.sendMessage({ type: 'goBack' }, () => {})
 }
 
-el.back.addEventListener('click', () => { el.back.disabled = true; goBack() })
+// The user chose not to go in. Recorded for the insights page; saving a link
+// for later is counted separately, so it does not come through here.
+function turnBack() {
+  if (matchedSite) reportNudge(matchedSite, 'back')
+  goBack()
+}
+
+el.back.addEventListener('click', () => { el.back.disabled = true; turnBack() })
 
 el.save.addEventListener('click', async () => {
   el.save.disabled = true
@@ -180,5 +187,5 @@ el.continue.addEventListener('click', async () => {
 
 // Escape is the same as choosing to go back.
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') goBack()
+  if (e.key === 'Escape') turnBack()
 })

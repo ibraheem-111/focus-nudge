@@ -750,3 +750,34 @@ test('a state.json from the old daemon with phase SNOOZED loads and migrates', a
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('POST /nudge records shown and back, and rejects anything else', async () => {
+  const ok = await fetch(base + '/nudge', { method: 'POST', body: JSON.stringify({ site: 'reddit.com', outcome: 'shown' }) })
+  assert.equal(ok.status, 200)
+  const bad = await fetch(base + '/nudge', { method: 'POST', body: JSON.stringify({ site: 'reddit.com', outcome: 'nope' }) })
+  assert.equal(bad.status, 400)
+  await fetch(base + '/nudge', { method: 'POST', body: JSON.stringify({ site: 'reddit.com', outcome: 'back' }) })
+  const r = await get('/insights')
+  assert.ok(r.funnel.shown >= 1)
+  assert.ok(r.funnel.back >= 1)
+  assert.ok(r.bySite['reddit.com'].shown >= 1)
+})
+
+test('a web page cannot read /insights', async () => {
+  const res = await fetch(base + '/insights', { headers: { origin: 'https://www.reddit.com' } })
+  assert.equal(res.status, 403)
+})
+
+test('GET /insights summarises the log with the configured work length', async () => {
+  const r = await get('/insights')
+  assert.equal(typeof r.kpis.blocks.all, 'number')
+  assert.equal(r.byHour.length, 24)
+  assert.equal(r.workMinutes, DEFAULTS.workMinutes)
+})
+
+test('GET /insights?days=7 narrows to the last seven days', async () => {
+  const before = Date.now()
+  const r = await get('/insights?days=7')
+  assert.ok(r.since >= before - 7 * 86_400_000 - 1000 && r.since <= Date.now() - 7 * 86_400_000 + 1000)
+  assert.equal((await get('/insights?days=junk')).since, null)
+})

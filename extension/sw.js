@@ -1,5 +1,5 @@
 import { decide } from './policy.js'
-import { getState, isDown } from './api.js'
+import { getState, isDown, reportNudge } from './api.js'
 
 const POLL_ALARM = 'focus-nudge-poll'
 const CACHE_KEY = 'cachedView'
@@ -136,6 +136,8 @@ async function onNavigation(details) {
 
   try {
     await chrome.tabs.update(details.tabId, { url: interstitialUrl(target) })
+    // Not awaited: a slow or absent daemon must never delay the pause screen.
+    if (verdict.site) reportNudge(verdict.site, 'shown')
   } catch {}
 }
 

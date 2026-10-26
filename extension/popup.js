@@ -74,6 +74,10 @@ async function act(promise) {
 
 // The dashboard is no longer the new tab page, so this is how you reach it.
 // Opening our own extension page needs no permission beyond what we already have.
+el('open-insights').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('insights.html') })
+  window.close()
+})
 el('open-dashboard').addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') })
   window.close()

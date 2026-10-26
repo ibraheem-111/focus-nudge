@@ -923,3 +923,32 @@ test('an issue created for a task removed before Linear answered is cancelled', 
   const { effects } = reduce(s, { type: 'TASK_LINKED', taskId: 1, text: 'old', linear: LINK('40') }, T0, LIN)
   assert.deepEqual(cancels(effects), ['40'])
 })
+
+// --- insights inputs ---------------------------------------------------------
+
+test('block_completed records the minutes actually worked', () => {
+  let s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  let { effects } = reduce(s, { type: 'ADVANCE' }, T0 + 10 * MIN, CFG)
+  assert.equal(effects.find(e => e.event === 'block_completed').data.minutes, 10, 'skipped early')
+  // The block is over at expiry; overrunning it is not extra focus.
+  ;({ effects } = reduce(s, { type: 'ADVANCE' }, T0 + 30 * MIN, CFG))
+  assert.equal(effects.find(e => e.event === 'block_completed').data.minutes, 25)
+})
+
+test('block_completed minutes while paused are what was worked before the pause', () => {
+  let s = reduce(initialState(), { type: 'START' }, T0, CFG).state
+  s = reduce(s, { type: 'PAUSE' }, T0 + 5 * MIN, CFG).state
+  const { effects } = reduce(s, { type: 'ADVANCE' }, T0 + 50 * MIN, CFG)
+  assert.equal(effects.find(e => e.event === 'block_completed').data.minutes, 5)
+})
+
+test('NUDGE_EVENT logs a shown or back outcome and changes no state', () => {
+  const s = initialState()
+  for (const outcome of ['shown', 'back']) {
+    const { state, effects } = reduce(s, { type: 'NUDGE_EVENT', site: 'reddit.com', outcome }, T0, CFG)
+    assert.equal(state, s)
+    assert.deepEqual(effects, [{ type: 'log', event: `nudge_${outcome}`, data: { site: 'reddit.com' } }])
+  }
+  assert.deepEqual(reduce(s, { type: 'NUDGE_EVENT', site: 'reddit.com', outcome: 'evil' }, T0, CFG).effects, [])
+  assert.deepEqual(reduce(s, { type: 'NUDGE_EVENT', site: '', outcome: 'shown' }, T0, CFG).effects, [])
+})

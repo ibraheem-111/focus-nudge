@@ -39,3 +39,7 @@ export const site = (action, s) => request('POST', '/sites', { action, site: s }
 export const queueAdd = (url, title) => request('POST', '/queue', { url, title })
 export const queueDrain = () => request('POST', '/queue', { drain: true })
 export const grace = s => request('POST', '/grace', { site: s })
+// For the insights page only: a nudge was shown, or the user turned back from one.
+export const reportNudge = (s, outcome) => request('POST', '/nudge', { site: s, outcome })
+// days: a positive number, or null for all time.
+export const getInsights = days => request('GET', days ? `/insights?days=${days}` : '/insights', undefined, 5000)

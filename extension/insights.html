@@ -1,0 +1,74 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>focus insights</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="insights.css">
+<div class="wrap wide">
+  <header class="ins-head">
+    <h1>Insights</h1>
+    <label class="ins-range">range
+      <select id="range">
+        <option value="7">last 7 days</option>
+        <option value="30" selected>last 30 days</option>
+        <option value="90">last 90 days</option>
+        <option value="all">all time</option>
+      </select>
+    </label>
+  </header>
+  <p class="empty" id="span"></p>
+  <p class="down" id="down" hidden>
+    The daemon is not running, so there is nothing to show. Start it with
+    <code>systemctl --user start focus-nudge</code>.
+  </p>
+
+  <section class="kpis" id="kpis" aria-label="headline numbers"></section>
+
+  <section class="card">
+    <h2>Completed blocks, last 26 weeks</h2>
+    <div id="calendar" class="chart"></div>
+    <div id="calendar-legend" class="legend"></div>
+  </section>
+
+  <section class="card">
+    <h2 id="trend-title">Blocks and continue-anyway</h2>
+    <div id="trend-legend" class="legend"></div>
+    <div id="trend" class="chart"></div>
+    <details><summary>table</summary><div id="trend-table"></div></details>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>By hour of day</h2>
+      <div id="hour-legend" class="legend"></div>
+      <div id="hours" class="chart"></div>
+    </section>
+    <section class="card">
+      <h2>By weekday</h2>
+      <div id="weekday-legend" class="legend"></div>
+      <div id="weekdays" class="chart"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Sites</h2>
+    <div id="sites"></div>
+  </section>
+
+  <div class="grid3">
+    <section class="card">
+      <h2>When a nudge appears</h2>
+      <div id="funnel"></div>
+      <p class="note" id="funnel-note"></p>
+    </section>
+    <section class="card">
+      <h2>How work blocks end</h2>
+      <div id="outcomes"></div>
+    </section>
+    <section class="card">
+      <h2>Nudging switched off for</h2>
+      <div id="durations"></div>
+    </section>
+  </div>
+</div>
+<div class="tip" id="tip" hidden></div>
+<script type="module" src="insights.js"></script>

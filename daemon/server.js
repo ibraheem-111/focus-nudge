@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { loadConfig, saveConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
-import { initialState, reduce, settle, view, PHASE, LEGACY_SNOOZED } from './core.js'
+import { initialState, reduce, settle, view, PHASE, LEGACY_SNOOZED, NUDGE_OUTCOMES } from './core.js'
 import { createLinear, loadLinearKey } from './linear.js'
 
 const LINEAR_TEAM_ID = '7c4547c3-9bfd-4235-9141-cb069ccb3762'
@@ -31,43 +31,10 @@ export function parseQuotes(text) {
     })
 }
 
-// Local calendar day, not UTC: "blocks today" has to mean the user's today.
-// Built from the local getters rather than a locale format so it cannot drift
-// with locale settings.
-export function localDay(at) {
-  const d = new Date(at)
-  const pad = n => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
-// `dayKey` and `now` are injectable so the day-bucketing can be tested without
-// depending on the machine's timezone.
-export function summariseLog(text, { dayKey = localDay, now = Date.now() } = {}) {
-  const stats = {
-    blocksCompleted: 0, nudgesContinued: 0, savedForLater: 0, queueDrained: 0,
-    byDay: {}, today: 0, last7: 0,
-  }
-  const todayKey = dayKey(now)
-  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000
-
-  for (const line of String(text).split('\n')) {
-    if (!line.trim()) continue
-    let entry
-    try { entry = JSON.parse(line) } catch { continue }
-
-    if (entry.event === 'block_completed') {
-      stats.blocksCompleted++
-      const key = Number.isFinite(entry.at) ? dayKey(entry.at) : 'unknown'
-      stats.byDay[key] = (stats.byDay[key] ?? 0) + 1
-      if (key === todayKey) stats.today++
-      if (Number.isFinite(entry.at) && entry.at >= sevenDaysAgo) stats.last7++
-    }
-    else if (entry.event === 'continued') stats.nudgesContinued++
-    else if (entry.event === 'saved_for_later') stats.savedForLater++
-    else if (entry.event === 'queue_drained') stats.queueDrained++
-  }
-  return stats
-}
+// Moved to stats.js with the insights summary; re-exported so existing callers
+// and tests keep importing them from here.
+export { summariseLog, localDay } from './stats.js'
+import { summariseLog, insights } from './stats.js'
 
 // The fields core.js iterates, indexes or spreads without checking first,
 // because it is pure and trusts its caller to hand it a real state. Returns a
@@ -344,6 +311,13 @@ export function createServer(opts = {}) {
           return send(200, { ...currentView(), totals: summariseLog(text) })
         }
         if (route === '/linear') return send(200, await linearProjects())
+        if (route === '/insights') {
+          let text = ''
+          try { text = fs.readFileSync(paths.log, 'utf8') } catch {}
+          const days = Number(url.searchParams.get('days'))
+          const since = Number.isFinite(days) && days > 0 ? Date.now() - days * 86_400_000 : null
+          return send(200, { ...insights(text, { workMinutes: config.workMinutes, since }), workMinutes: config.workMinutes })
+        }
         return send(404, { error: 'not found' })
       }
 
@@ -385,6 +359,9 @@ export function createServer(opts = {}) {
             if (body.drain) return send(200, dispatch({ type: 'QUEUE_DRAIN' }))
             return send(200, dispatch({ type: 'QUEUE_ADD', url: body.url, title: body.title }))
           }
+          case '/nudge':
+            if (!NUDGE_OUTCOMES.has(body.outcome)) return send(400, { error: 'unknown nudge outcome' })
+            return send(200, dispatch({ type: 'NUDGE_EVENT', site: body.site, outcome: body.outcome }))
           case '/grace':
             return send(200, dispatch({ type: 'GRACE', site: body.site }))
           default:

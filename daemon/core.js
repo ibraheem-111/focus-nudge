@@ -116,7 +116,7 @@ export function reduce(state, action, now, config) {
         } else {
           toPhase = PHASE.SHORT_BREAK
         }
-        effects.push({ type: 'log', event: 'block_completed', data: {} })
+        effects.push({ type: 'log', event: 'block_completed', data: { minutes: workedMinutes(state, now, config) } })
       } else {
         toPhase = PHASE.WORK
       }
@@ -185,6 +185,15 @@ export function reduce(state, action, now, config) {
       if (nudgingOn(state, now)) return { state, effects }
       effects.push({ type: 'log', event: 'nudge_on', data: { reason: 'user' } })
       return { state: { ...state, nudgeOffUntil: null, nudgeOffIndefinite: false }, effects }
+    }
+
+    // The extension reports a nudge it showed and a nudge the user turned back
+    // from. Only logged, for the insights page; nothing here decides anything.
+    case 'NUDGE_EVENT': {
+      const site = String(action.site || '').trim()
+      if (!site || !NUDGE_OUTCOMES.has(action.outcome)) return { state, effects }
+      effects.push({ type: 'log', event: `nudge_${action.outcome}`, data: { site } })
+      return { state, effects }
     }
 
     case 'GRACE': {
@@ -432,6 +441,17 @@ function drainSavedLinks(state, effects) {
 // after a long day. Every path that can empty the list goes through here.
 function withTasks(state, tasks) {
   return { ...state, tasks, nextTaskId: tasks.length === 0 ? 1 : state.nextTaskId }
+}
+
+export const NUDGE_OUTCOMES = new Set(['shown', 'back'])
+
+// How much of the block was actually worked: its length minus what was left,
+// never more than its length (an overrun is not extra focus). One decimal.
+function workedMinutes(state, now, config) {
+  const length = phaseDurationMs(PHASE.WORK, config)
+  const left = state.paused ? state.pausedRemainingMs ?? 0 : state.endsAt === null ? 0 : state.endsAt - now
+  const worked = Math.min(length, Math.max(0, length - Math.max(0, left)))
+  return Math.round(worked / MIN * 10) / 10
 }
 
 // Linear's closed state types. Duplicate is a team state of its own type here.
