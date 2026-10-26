@@ -282,8 +282,10 @@ export function reduce(state, action, now, config) {
       return { state: withTasks(dismissTasks(state, gone), state.tasks.filter(t => t.id !== action.id)), effects }
     }
 
+    // Clearing never touches Linear: one command must not be able to cancel a
+    // whole board (sync imports every active issue). The issues are dismissed,
+    // so they stay out of this list; in Linear they are exactly as they were.
     case 'TASK_CLEAR':
-      cancelOpenLinked(state.tasks, effects)
       return { state: withTasks(dismissTasks(state, state.tasks), []), effects }
 
     case 'TASK_CLEAR_DONE': {
@@ -489,7 +491,7 @@ function dismiss(state, ids) {
   return { ...state, linearDismissed: [...prior, ...ids.filter(id => !prior.includes(id))] }
 }
 
-// Removing a task drops it in Linear too, so the two boards do not drift apart.
+// Removing ONE task drops it in Linear too, so the two boards do not drift apart.
 // Only OPEN tasks: a ticked task is already Done there, and clearing it from this
 // list must not rewrite Done as Canceled. Dismissal still happens as well, so a
 // cancel that never reaches Linear cannot bring the task back on the next sync.

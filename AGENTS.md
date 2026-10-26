@@ -53,7 +53,8 @@ issues unless asked. Prefer reads.
 
 **The running daemon writes to Linear on the user's behalf** (since the
 two-way task sync): adding a task creates an issue, ticking moves it to
-Done/Todo, removing an open task cancels it. That is the feature the user asked
+Done/Todo, removing ONE open task cancels it. Clearing the list never touches
+Linear — one command must never be able to cancel the whole board. That is the feature the user asked
 for, and it goes through `daemon/linear.js` only. `createServer()` builds no
 Linear client unless one is passed in — only the real entry point builds one
 from the key — so a test can never reach the real API. Keep it that way: tests

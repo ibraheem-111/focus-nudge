@@ -52,8 +52,8 @@ click "Load unpacked", and select the `extension/` directory.
     focus task route the board --project pcb   file its Linear issue under a project
     focus task done 3        tick one off (also: task toggle <id>)
     focus task rm 3          remove one (cancels its Linear issue if it is still open)
-    focus task clear         empty the list (ids restart at 1 once it is empty; open
-                             Linear issues on the list are cancelled)
+    focus task clear         empty the list (ids restart at 1 once it is empty);
+                             Linear is left untouched
     focus task clear done    remove only the ticked-off tasks
 
     focus sites              list the watched domains
@@ -86,8 +86,9 @@ micro-task list and the IBR team in Linear are kept in step:
 - adding a task creates a Linear issue, optionally under a project — pick one
   in the popup or dashboard, or `--project <prefix>` on the CLI;
 - ticking a task done moves its issue to Done, and unticking moves it back to Todo;
-- removing an open task (`task rm`, `task clear`, the × button) cancels its
-  issue; clearing tasks already ticked done leaves their issues Done;
+- removing one open task (`task rm` or the × button) cancels its issue.
+  `task clear` and Clear done never touch Linear — they only empty the list,
+  and the cleared issues are not pulled back in;
 - every minute, Todo / In Progress / In Review issues show up in the task list,
   and an issue closed in Linear gets ticked here. A task you ticked here is never
   unticked by Linear, and one you removed is never brought back.

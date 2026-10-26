@@ -94,6 +94,7 @@ Nobody has checked these. Do not assume they work.
 | 47 | The `IBR-n` link | opens the issue in a new tab and does NOT tick the task |
 | 48 | Tick and untick a linked task | the issue moves to Done, then back to Todo |
 | 49 | Remove an open linked task | the issue moves to Canceled and does not come back on the next sync |
+| 49b | `focus task clear` with linked tasks | the list empties, every issue in Linear is UNCHANGED, and none come back on the next sync |
 | 50 | An issue started in Linear | an issue moved to Todo / In Progress appears in the task list within a minute; closing it in Linear ticks it |
 | 51 | Picker hidden without Linear | with no `LINEAR_API_KEY`, the popup and dashboard show no project picker |
 | 52 | Insights page opens | from the popup button and the dashboard link; KPI tiles, calendar, and every chart render; hovering a mark shows its tooltip |

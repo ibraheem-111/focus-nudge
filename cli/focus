@@ -154,8 +154,8 @@ usage: focus [command]
                          prefix of its name works, in any case
   task done <id>         tick one off (also: task toggle <id>)
   task rm <id>           remove one (cancels its Linear issue if it is open)
-  task clear             empty the list (ids restart at 1 once it is empty;
-                         open Linear issues are cancelled)
+  task clear             empty the list (ids restart at 1 once it is empty);
+                         Linear is left untouched
   task clear done        remove only the ticked-off tasks
 
   sites                  list the watched domains

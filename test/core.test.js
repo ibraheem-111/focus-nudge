@@ -905,10 +905,17 @@ test('removing a task already ticked done leaves its Linear issue Done', () => {
   assert.deepEqual(cancels(effects), [])
 })
 
-test('TASK_CLEAR cancels the open linked tasks only, and clear done cancels nothing', () => {
+// Replaces "TASK_CLEAR cancels the open linked tasks only". The user ruled that
+// one clear must never be able to cancel a whole Linear board: clearing empties
+// the local list only. Removing ONE task still cancels its issue.
+test('TASK_CLEAR and clear done cancel nothing in Linear, and the cleared issues stay out of the list', () => {
   let s = reduce(linkedList(['a', 'b', 'c']), { type: 'TASK_TOGGLE', id: 2 }, T0, LIN).state
   assert.deepEqual(cancels(reduce(s, { type: 'TASK_CLEAR_DONE' }, T0, LIN).effects), [])
-  assert.deepEqual(cancels(reduce(s, { type: 'TASK_CLEAR' }, T0, LIN).effects), ['40', '42'])
+  const cleared = reduce(s, { type: 'TASK_CLEAR' }, T0, LIN)
+  assert.deepEqual(cancels(cleared.effects), [])
+  assert.deepEqual(cleared.state.linearDismissed, ['40', '41', '42'])
+  const synced = reduce(cleared.state, { type: 'LINEAR_SYNC', issues: [ISSUE('40', 'started')] }, T0, LIN).state
+  assert.deepEqual(synced.tasks, [], 'not pulled back in')
 })
 
 test('removing an unlinked task asks Linear for nothing', () => {
