@@ -62,7 +62,7 @@ test('a watched site is nudged while idle', () => {
   assert.equal(decide({ url: 'https://reddit.com/', phase: 'IDLE', graces: {}, sites: SITES, now: T0 }).action, 'nudge')
 })
 
-test('long break and snooze are sanctioned windows', () => {
+test('against an older daemon with no nudging field, long break and snooze still allow', () => {
   for (const phase of ['LONG_BREAK', 'SNOOZED']) {
     const d = decide({ url: 'https://reddit.com/', phase, graces: {}, sites: SITES, now: T0 })
     assert.equal(d.action, 'allow', `${phase} should allow`)
@@ -235,4 +235,41 @@ test('the four domains in daily use are all watched by default', () => {
   for (const s of ['reddit.com', 'youtube.com', 'x.com', 'instagram.com']) {
     assert.ok(FALLBACK_SITES.includes(s), `${s} missing from FALLBACK_SITES`)
   }
+})
+
+// The daemon now reports `nudging` directly: a switch independent of the timer.
+test('nudging:false allows a watched site in every phase', () => {
+  for (const phase of ['IDLE', 'WORK', 'SHORT_BREAK', 'LONG_BREAK']) {
+    const d = decide({ url: 'https://reddit.com/', phase, nudging: false, graces: {}, sites: SITES, now: T0 })
+    assert.equal(d.action, 'allow', phase)
+    assert.equal(d.reason, 'nudging-off')
+  }
+})
+
+test('nudging:true nudges in every phase, long break included', () => {
+  for (const phase of ['IDLE', 'WORK', 'SHORT_BREAK', 'LONG_BREAK']) {
+    const d = decide({ url: 'https://reddit.com/', phase, nudging: true, graces: {}, sites: SITES, now: T0 })
+    assert.equal(d.action, 'nudge', phase)
+  }
+})
+
+test('nudging:true still honours a live grace', () => {
+  const d = decide({ url: 'https://reddit.com/', phase: 'WORK', nudging: true, graces: { 'reddit.com': T0 + 1 }, sites: SITES, now: T0 })
+  assert.equal(d.action, 'allow')
+  assert.equal(d.reason, 'grace')
+})
+
+test('a down daemon ignores a stale nudging:false and fails closed', () => {
+  const d = decide({ url: 'https://reddit.com/', phase: null, nudging: false, graces: null, sites: SITES, now: T0, down: true })
+  assert.equal(d.action, 'nudge')
+})
+
+test('nudging:true with an unknown phase still nudges', () => {
+  const d = decide({ url: 'https://reddit.com/', phase: 'WAT', nudging: true, graces: {}, sites: SITES, now: T0 })
+  assert.equal(d.action, 'nudge')
+})
+
+test('a non-boolean nudging is ignored, not trusted', () => {
+  const d = decide({ url: 'https://reddit.com/', phase: 'WORK', nudging: 'false', graces: {}, sites: SITES, now: T0 })
+  assert.equal(d.action, 'nudge')
 })

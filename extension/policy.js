@@ -39,7 +39,7 @@ export function matchSite(url, sites) {
   return null
 }
 
-export function decide({ url, phase, graces, sites, now, down = false, fallbackPasses = null }) {
+export function decide({ url, phase, graces, sites, now, down = false, fallbackPasses = null, nudging }) {
   const site = matchSite(url, sites)
   if (!site) return { action: 'allow', site: null, reason: 'no-match' }
 
@@ -60,6 +60,17 @@ export function decide({ url, phase, graces, sites, now, down = false, fallbackP
   // Fail closed: with no usable phase we nudge rather than guess.
   if (typeof phase !== 'string' || phase.length === 0) {
     return { action: 'nudge', site, reason: 'no-state' }
+  }
+
+  // A current daemon reports `nudging`: a switch the user flips, independent of
+  // the timer. Only a real boolean from a reachable daemon is trusted; anything
+  // else falls through to the old phase rule below, which an older daemon still
+  // needs, and which still fails closed.
+  if (!down && typeof nudging === 'boolean') {
+    if (!nudging) return { action: 'allow', site, reason: 'nudging-off' }
+    const until = graces && typeof graces === 'object' ? graces[site] : undefined
+    if (typeof until === 'number' && until > now) return { action: 'allow', site, reason: 'grace' }
+    return { action: 'nudge', site, reason: 'nudge' }
   }
 
   if (!NUDGE_PHASES.has(phase)) {

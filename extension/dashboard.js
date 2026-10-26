@@ -1,5 +1,5 @@
-import { getState, getStats, timer, task, queueDrain, isDown } from './api.js'
-import { clockLine, renderTasks, PHASE_LABEL } from './ui.js'
+import { getState, getStats, timer, task, queueDrain, nudgingOff, nudgingOn, isDown } from './api.js'
+import { clockLine, renderTasks, PHASE_LABEL, nudgingLine } from './ui.js'
 
 const el = id => document.getElementById(id)
 const input = el('new-task')
@@ -24,9 +24,17 @@ function render(view, down) {
     el('queue-line').hidden = false
     el('queue-line').textContent = 'unknown'
     el('drain').hidden = true
+    el('nudging-line').textContent = nudgingLine(null)
+    el('nudging-off-controls').hidden = false
+    el('nudging-on-controls').hidden = true
     return
   }
   latest = view
+
+  el('nudging-line').textContent = nudgingLine(view)
+  el('nudging-line').classList.toggle('off', view.nudging === false)
+  el('nudging-off-controls').hidden = view.nudging === false
+  el('nudging-on-controls').hidden = view.nudging !== false
 
   el('phase').textContent = PHASE_LABEL[view.phase] ?? view.phase
   el('clock').textContent = clockLine(view)
@@ -50,7 +58,7 @@ function render(view, down) {
   const depth = view.queueDepth
   el('queue-line').hidden = false
   el('queue-line').textContent = depth
-    ? `${depth} link${depth === 1 ? '' : 's'} saved for your next long break`
+    ? `${depth} link${depth === 1 ? '' : 's'} saved — they open when you switch nudging off`
     : 'nothing saved'
   el('drain').hidden = depth === 0
 }
@@ -97,6 +105,16 @@ el('break').addEventListener('click', async () => {
 })
 el('drain').addEventListener('click', async () => {
   render(await refreshWith(queueDrain()), false)
+})
+// An empty data-hours is "until I turn it back on".
+for (const button of document.querySelectorAll('[data-hours]')) {
+  button.addEventListener('click', async () => {
+    const hours = button.dataset.hours === '' ? null : Number(button.dataset.hours)
+    render(await refreshWith(nudgingOff(hours)), false)
+  })
+}
+el('nudging-on').addEventListener('click', async () => {
+  render(await refreshWith(nudgingOn()), false)
 })
 
 // Today's block count comes from /stats, which reads the log. Polled every 30s

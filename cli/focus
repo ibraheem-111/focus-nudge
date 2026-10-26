@@ -11,7 +11,6 @@ const PHASE_LABEL = {
   WORK: 'work',
   SHORT_BREAK: 'short break',
   LONG_BREAK: 'long break',
-  SNOOZED: 'snoozed',
 }
 
 async function call(method, route, body) {
@@ -42,6 +41,21 @@ function formatDuration(ms) {
   const m = Math.floor(total / 60)
   const s = String(total % 60).padStart(2, '0')
   return `${sign}${m}:${s}`
+}
+
+// Nudge-offs run for hours, so this one shows h:mm:ss once past an hour.
+function formatLong(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
+}
+
+function nudgingLine(v) {
+  if (v.nudging !== false) return 'nudging on'
+  if (v.nudgeOffIndefinite || v.nudgeOffUntil === null) return 'nudging off until you turn it back on'
+  return `nudging off — ${formatLong(v.nudgeOffUntil - v.serverTime)} left`
 }
 
 // "2h", "90m", "1.5h", or a bare number of hours.
@@ -78,6 +92,7 @@ function printStatus(v) {
     line += `  [block ${v.blocksCompleted + (v.phase === 'WORK' ? 1 : 0)}/${v.blocksPerCycle}]`
   }
   console.log(line)
+  console.log(nudgingLine(v))
 
   if (v.tasks.length) {
     console.log()
@@ -85,7 +100,7 @@ function printStatus(v) {
   }
   if (v.queueDepth) {
     console.log()
-    console.log(`  ${v.queueDepth} link${v.queueDepth === 1 ? '' : 's'} saved for your next long break`)
+    console.log(`  ${v.queueDepth} link${v.queueDepth === 1 ? '' : 's'} saved for when you next switch nudging off`)
   }
   if (v.persisted === false) {
     console.log()
@@ -103,8 +118,11 @@ usage: focus [command]
   pause                  pause the running phase
   skip                   advance to the next phase
   stop                   back to idle, clears the cycle
-  break                  begin a long break, opening any saved links
-  off <duration>         stop nudging for a while: 2h, 90m, or a bare number of hours
+  break                  begin a long break
+  off [duration]         stop nudging: 2h, 90m, a bare number of hours, or no
+                         duration for "until I turn it back on". The timer is
+                         not touched — a running work block keeps running.
+  on                     turn nudging back on
 
   task                   list the micro-tasks
   task <text>            add a micro-task
@@ -117,7 +135,7 @@ usage: focus [command]
   sites add <domain>     watch another domain
   sites remove <domain>  stop watching one
 
-  queue                  list links saved for your next long break
+  queue                  list links saved for the next time you switch nudging off
   queue drain            open them now and empty the queue
 
   stats                  blocks today, last 7 days, all time, and a daily history
@@ -125,13 +143,14 @@ usage: focus [command]
   doctor                 diagnose a machine where the daemon or unit isn't working
   --help, -h, help       this text
 
-Phases never advance on their own: an expired block waits for you. Watched sites
-are nudged during work AND short breaks — a long break or an explicit
-\`focus off\` are the only windows where they open freely. See \`focus sites\`.
+Phases never advance on their own: an expired block waits for you. Nudging and
+the timer are independent switches: watched sites are nudged whenever nudging
+is on, whatever the timer is doing, and open freely while it is off. Turning
+nudging off opens any saved links. See \`focus sites\`.
 
 A work block or break finishing on its own plays a sound alongside the desktop
 notification — that is the one moment you are likely not watching the screen.
-Actions you trigger yourself (start, skip, snooze, break) stay silent. Configure
+Actions you trigger yourself (start, skip, on, off, break) stay silent. Configure
 or disable this under "sounds" in config.json; see \`focus doctor\` to check
 whether sounds are enabled and the configured sound files exist.
 
@@ -164,14 +183,21 @@ switch (cmd) {
     printStatus(await call('POST', '/timer', { action: 'breakLong' }))
     break
   case 'off': {
-    const hours = parseDuration(rest[0] ?? '1')
+    if (rest[0] === undefined) {
+      printStatus(await call('POST', '/nudging', { action: 'off', indefinite: true }))
+      break
+    }
+    const hours = parseDuration(rest[0])
     if (hours === null) {
-      console.error('focus: could not read that duration. Try "focus off 2h" or "focus off 90m".')
+      console.error('focus: could not read that duration. Try "focus off 2h", "focus off 90m", or just "focus off".')
       process.exit(1)
     }
-    printStatus(await call('POST', '/snooze', { hours }))
+    printStatus(await call('POST', '/nudging', { action: 'off', hours }))
     break
   }
+  case 'on':
+    printStatus(await call('POST', '/nudging', { action: 'on' }))
+    break
   case undefined:
   case 'status':
     printStatus(await call('GET', '/state'))

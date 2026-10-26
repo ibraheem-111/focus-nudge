@@ -9,6 +9,19 @@
   <p class="empty" id="cycle"></p>
   <p class="empty" id="today"></p>
 
+  <div class="nudging-panel">
+    <span class="nudging-line" id="nudging-line"></span>
+    <span class="actions inline" id="nudging-off-controls">
+      <button class="small" data-hours="1">Off 1h</button>
+      <button class="small" data-hours="2">2h</button>
+      <button class="small" data-hours="4">4h</button>
+      <button class="small" data-hours="">Until I turn it on</button>
+    </span>
+    <span class="actions inline" id="nudging-on-controls" hidden>
+      <button class="primary small" id="nudging-on">Turn nudging on</button>
+    </span>
+  </div>
+
   <hr>
 
   <div class="tasks" id="tasks"></div>

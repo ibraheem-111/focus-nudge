@@ -111,6 +111,7 @@ async function onNavigation(details) {
   const verdict = decide({
     url: target,
     phase: down ? null : view?.phase,
+    nudging: down ? null : view?.nudging,
     graces: down ? null : view?.graces,
     sites: view?.sites ?? null,
     now: Date.now(),

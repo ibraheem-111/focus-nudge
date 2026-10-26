@@ -88,12 +88,26 @@ test('POST /queue add stores a link', async () => {
   assert.equal(v.queueDepth, 1)
 })
 
-test('a long break drains the queue through the openUrls hook', async () => {
+// Replaces 'a long break drains the queue through the openUrls hook': a long
+// break no longer opens watched sites, so the queue drains when nudging is
+// switched off instead.
+test('switching nudging off drains the queue through the openUrls hook', async () => {
+  opened.length = 0
+  const v = await post('/nudging', { action: 'off', hours: 1 })
+  assert.equal(v.nudging, false)
+  assert.equal(v.queueDepth, 0)
+  assert.deepEqual(opened, ['https://reddit.com/r/x'])
+  assert.equal((await post('/nudging', { action: 'on' })).nudging, true)
+})
+
+test('a long break leaves the queue alone', async () => {
+  await post('/queue', { url: 'https://reddit.com/r/later', title: 'later' })
   opened.length = 0
   const v = await post('/timer', { action: 'breakLong' })
   assert.equal(v.phase, 'LONG_BREAK')
-  assert.equal(v.queueDepth, 0)
-  assert.deepEqual(opened, ['https://reddit.com/r/x'])
+  assert.equal(v.queueDepth, 1)
+  assert.deepEqual(opened, [])
+  assert.equal(v.nudging, true, 'and a long break does not switch nudging off')
 })
 
 test('POST /sites persists to the config file and shows in the view', async () => {
@@ -103,10 +117,43 @@ test('POST /sites persists to the config file and shows in the view', async () =
   assert.ok(onDisk.sites.includes('news.ycombinator.com'))
 })
 
-test('POST /snooze opens the sanctioned window', async () => {
+// Replaces 'POST /snooze opens the sanctioned window'. /snooze is kept for old
+// clients, but it now switches nudging off without touching the timer.
+test('POST /snooze switches nudging off and keeps the running block', async () => {
+  await post('/timer', { action: 'start' })
   const v = await post('/snooze', { hours: 2 })
-  assert.equal(v.phase, 'SNOOZED')
-  assert.equal(v.nudgingPhase, false)
+  assert.equal(v.phase, 'WORK', 'the work block survives')
+  assert.equal(v.nudging, false)
+  assert.equal(v.nudgingPhase, false, 'old clients see the same answer')
+  assert.ok(v.nudgeOffUntil > Date.now())
+  await post('/nudging', { action: 'on' })
+})
+
+test('POST /nudging off indefinite and on', async () => {
+  const off = await post('/nudging', { action: 'off', indefinite: true })
+  assert.equal(off.nudging, false)
+  assert.equal(off.nudgeOffIndefinite, true)
+  assert.equal(off.nudgeOffUntil, null)
+  const on = await post('/nudging', { action: 'on' })
+  assert.equal(on.nudging, true)
+  assert.equal(on.nudgeOffIndefinite, false)
+})
+
+test('POST /nudging rejects an unknown action', async () => {
+  const res = await fetch(base + '/nudging', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"action":"maybe"}',
+  })
+  assert.equal(res.status, 400)
+})
+
+test('a web page cannot switch nudging off', async () => {
+  const res = await fetch(base + '/nudging', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://www.reddit.com' },
+    body: '{"action":"off","indefinite":true}',
+  })
+  assert.equal(res.status, 403)
+  assert.equal((await get('/state')).nudging, true)
 })
 
 test('state survives a restart', async () => {
@@ -375,7 +422,7 @@ test('a shape-invalid state file is quarantined rather than bricking the daemon'
   assert.equal(res.status, 200, `got ${res.status} ${JSON.stringify(v)}`)
   assert.equal(v.phase, 'IDLE', 'started fresh instead of throwing on every request')
   assert.deepEqual(v.tasks, [])
-  assert.equal(v.nudgingPhase, true, 'and nudging is on, not stuck')
+  assert.equal(v.nudging, true, 'and nudging is on, not stuck')
   assert.ok(fs.existsSync(statePath + '.corrupt'), 'the bad file is kept for inspection')
   rescued.close()
 
@@ -668,4 +715,38 @@ test('a malformed json body returns 400 rather than crashing', async () => {
     body: '{ nope',
   })
   assert.equal(res.status, 400)
+})
+
+// The author's live state.json holds phase SNOOZED when this daemon first
+// starts. It must be migrated, not quarantined: quarantine would discard the
+// task list along with the snooze.
+test('a state.json from the old daemon with phase SNOOZED loads and migrates', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-nudge-legacy-'))
+  const statePath = path.join(dir, 'state.json')
+  const until = Date.now() + 30 * 60_000
+  fs.writeFileSync(statePath, JSON.stringify({
+    phase: 'SNOOZED', endsAt: until, paused: false, pausedRemainingMs: null, expiredNotified: false,
+    blocksCompleted: 0, tasks: [{ id: 40, text: 'keep me', done: false }], nextTaskId: 41, queue: [], graces: {},
+  }))
+  const legacy = createServer({
+    config: { ...DEFAULTS, port: 0 },
+    statePath,
+    logPath: path.join(dir, 'log.jsonl'),
+    quotesPath: path.join(dir, 'quotes.txt'),
+    configPath: path.join(dir, 'config.json'),
+    notify: () => {},
+    openUrls: () => {},
+  })
+  try {
+    const port = await legacy.listen(0)
+    const v = await (await fetch(`http://127.0.0.1:${port}/state`)).json()
+    assert.equal(fs.existsSync(statePath + '.corrupt'), false, 'not quarantined')
+    assert.equal(v.phase, 'IDLE')
+    assert.equal(v.nudging, false, 'the snooze carries over')
+    assert.equal(v.nudgeOffUntil, until)
+    assert.deepEqual(v.tasks.map(t => t.text), ['keep me'])
+  } finally {
+    legacy.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

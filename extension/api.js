@@ -28,7 +28,10 @@ export const getState = () => request('GET', '/state')
 export const getQuotes = () => request('GET', '/quotes')
 export const getStats = () => request('GET', '/stats')
 export const timer = action => request('POST', '/timer', { action })
-export const snooze = hours => request('POST', '/snooze', { hours })
+// hours: a positive number, or null for "until I turn it back on".
+export const nudgingOff = hours =>
+  request('POST', '/nudging', hours == null ? { action: 'off', indefinite: true } : { action: 'off', hours })
+export const nudgingOn = () => request('POST', '/nudging', { action: 'on' })
 export const task = (action, payload = {}) => request('POST', '/tasks', { action, ...payload })
 export const site = (action, s) => request('POST', '/sites', { action, site: s })
 export const queueAdd = (url, title) => request('POST', '/queue', { url, title })

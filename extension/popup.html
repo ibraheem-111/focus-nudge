@@ -33,11 +33,17 @@
 
   <p><button class="small" id="open-dashboard">Open dashboard</button></p>
 
-  <h2>Turn nudging off for</h2>
-  <div class="actions">
-    <button class="small" data-hours="1">1 hour</button>
+  <h2>Nudging</h2>
+  <p class="nudging-line" id="nudging-line"></p>
+  <p class="empty">Independent of the timer — a running block keeps running.</p>
+  <div class="actions" id="nudging-off-controls">
+    <button class="small" data-hours="1">Off 1 hour</button>
     <button class="small" data-hours="2">2 hours</button>
     <button class="small" data-hours="4">4 hours</button>
+    <button class="small" data-hours="">Until I turn it on</button>
+  </div>
+  <div class="actions" id="nudging-on-controls" hidden>
+    <button class="primary small" id="nudging-on">Turn nudging on</button>
   </div>
 
   <h2>Watched sites</h2>

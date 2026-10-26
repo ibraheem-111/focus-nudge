@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { loadConfig, saveConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
-import { initialState, reduce, settle, view, PHASE } from './core.js'
+import { initialState, reduce, settle, view, PHASE, LEGACY_SNOOZED } from './core.js'
 
 const TIMER_ACTIONS = {
   start: 'START',
@@ -69,7 +69,9 @@ export function summariseLog(text, { dayKey = localDay, now = Date.now() } = {})
 // reason string when the loaded object cannot safely be used, or null when it
 // can. Deliberately narrow: rejecting good state would lose the task list on
 // every restart, which is worse than the bug it guards.
-const KNOWN_PHASES = new Set(Object.values(PHASE))
+// LEGACY_SNOOZED is accepted so a state.json from the old daemon is migrated by
+// settle rather than quarantined along with the task list.
+const KNOWN_PHASES = new Set([...Object.values(PHASE), LEGACY_SNOOZED])
 
 function shapeProblem(parsed) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -285,6 +287,13 @@ export function createServer(opts = {}) {
           }
           case '/snooze':
             return send(200, dispatch({ type: 'SNOOZE', hours: body.hours }))
+          case '/nudging': {
+            if (body.action === 'on') return send(200, dispatch({ type: 'NUDGE_ON' }))
+            if (body.action === 'off') {
+              return send(200, dispatch({ type: 'NUDGE_OFF', hours: body.hours, indefinite: body.indefinite === true }))
+            }
+            return send(400, { error: 'unknown nudging action' })
+          }
           case '/tasks': {
             const map = { add: 'TASK_ADD', toggle: 'TASK_TOGGLE', remove: 'TASK_REMOVE', clear: 'TASK_CLEAR', clearDone: 'TASK_CLEAR_DONE' }
             const type = map[body.action]

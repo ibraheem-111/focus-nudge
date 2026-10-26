@@ -179,3 +179,22 @@ test('focus stats prints the block totals it derives from the log', async () => 
   assert.match(stdout, /last 7 days/)
   assert.match(stdout, /all time/)
 })
+
+test('focus off with no duration switches nudging off until turned back on', async () => {
+  const off = await focus('off')
+  assert.equal(off.code, 0)
+  assert.match(off.stdout, /nudging off until you turn it back on/)
+  const on = await focus('on')
+  assert.equal(on.code, 0)
+  assert.match(on.stdout, /nudging on/)
+})
+
+test('focus off 90m keeps a running work block running', async () => {
+  await focus('start')
+  const { code, stdout } = await focus('off', '90m')
+  assert.equal(code, 0)
+  assert.match(stdout, /^work/, 'the block is still running')
+  assert.match(stdout, /nudging off — 1:29:\d\d left|nudging off — 1:30:00 left/)
+  await focus('on')
+  await focus('stop')
+})

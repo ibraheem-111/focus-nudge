@@ -80,9 +80,10 @@ function render(view, down) {
     return
   }
 
-  // A sanctioned window opened while this screen was up: let the visit through
-  // rather than making the user click again.
-  if (view.nudgingPhase === false) return release()
+  // Nudging was switched off while this screen was up: let the visit through
+  // rather than making the user click again. `nudgingPhase` covers a daemon
+  // older than the `nudging` field.
+  if (view.nudging === false || (view.nudging === undefined && view.nudgingPhase === false)) return release()
 
   // Track the site the daemon is actually watching, so the grace call matches.
   // A null result means its list does not cover this visit; keep the fallback

@@ -179,3 +179,15 @@ test('renderTasks attaches no change listener when onToggle is omitted', () => {
   const [box] = row.children
   assert.equal(box.hasListener('change'), false, 'no onToggle means no change listener')
 })
+
+test('nudgingLine describes the nudging switch', async () => {
+  const { nudgingLine } = await import('../extension/ui.js')
+  assert.equal(nudgingLine({ nudging: true }), 'nudging on')
+  assert.equal(nudgingLine({ nudging: false, nudgeOffIndefinite: true, nudgeOffUntil: null }),
+    'nudging off until you turn it back on')
+  assert.equal(nudgingLine({ nudging: false, nudgeOffIndefinite: false, nudgeOffUntil: 1_000 + 42 * 60_000 + 10_000, serverTime: 1_000 }),
+    'nudging off — 42:10 left')
+  assert.equal(nudgingLine({ nudging: false, nudgeOffIndefinite: false, nudgeOffUntil: 1_000 + 90 * 60_000, serverTime: 1_000 }),
+    'nudging off — 1:30:00 left')
+  assert.equal(nudgingLine(null), 'nudging unknown — no daemon')
+})

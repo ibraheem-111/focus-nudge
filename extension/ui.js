@@ -3,7 +3,6 @@ export const PHASE_LABEL = {
   WORK: 'work block',
   SHORT_BREAK: 'short break',
   LONG_BREAK: 'long break',
-  SNOOZED: 'snoozed',
 }
 
 export function formatDuration(ms) {
@@ -19,6 +18,22 @@ export function clockLine(v) {
   if (v.overrun) return `ran over by ${formatDuration(-v.remainingMs)}`
   const noun = v.phase === 'WORK' ? 'in this block' : 'of your break'
   return `${formatDuration(v.remainingMs)} left ${noun}`
+}
+
+// Nudge-offs run for hours, so this shows h:mm:ss once past an hour.
+function formatLong(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
+}
+
+export function nudgingLine(v) {
+  if (!v) return 'nudging unknown — no daemon'
+  if (v.nudging !== false) return 'nudging on'
+  if (v.nudgeOffIndefinite || v.nudgeOffUntil == null) return 'nudging off until you turn it back on'
+  return `nudging off — ${formatLong(v.nudgeOffUntil - v.serverTime)} left`
 }
 
 // The pause screen's countdown lives here so it can be tested without a DOM.

@@ -1,5 +1,5 @@
-import { getState, timer, snooze, task, site, queueDrain, isDown } from './api.js'
-import { clockLine, renderTasks, PHASE_LABEL } from './ui.js'
+import { getState, timer, nudgingOff, nudgingOn, task, site, queueDrain, isDown } from './api.js'
+import { clockLine, renderTasks, PHASE_LABEL, nudgingLine } from './ui.js'
 
 const el = id => document.getElementById(id)
 let latest = null
@@ -36,9 +36,17 @@ function render(view) {
     el('queue-line').textContent = 'unknown'
     el('drain').hidden = true
     renderSites([])
+    el('nudging-line').textContent = nudgingLine(null)
+    el('nudging-off-controls').hidden = false
+    el('nudging-on-controls').hidden = true
     return
   }
   latest = view
+
+  el('nudging-line').textContent = nudgingLine(view)
+  el('nudging-line').classList.toggle('off', view.nudging === false)
+  el('nudging-off-controls').hidden = view.nudging === false
+  el('nudging-on-controls').hidden = view.nudging !== false
 
   el('phase').textContent = PHASE_LABEL[view.phase] ?? view.phase
   el('clock').textContent = clockLine(view)
@@ -52,7 +60,7 @@ function render(view) {
   })
 
   el('queue-line').textContent = view.queueDepth
-    ? `${view.queueDepth} link${view.queueDepth === 1 ? '' : 's'} waiting`
+    ? `${view.queueDepth} link${view.queueDepth === 1 ? '' : 's'} waiting — they open when you switch nudging off`
     : 'nothing saved'
   el('drain').hidden = view.queueDepth === 0
 
@@ -86,10 +94,14 @@ el('drain').addEventListener('click', async () => {
   render(await act(queueDrain()))
 })
 
+// An empty data-hours is "until I turn it back on".
 for (const button of document.querySelectorAll('[data-hours]')) {
-  button.addEventListener('click', async () =>
-    render(await act(snooze(Number(button.dataset.hours)))))
+  button.addEventListener('click', async () => {
+    const hours = button.dataset.hours === '' ? null : Number(button.dataset.hours)
+    render(await act(nudgingOff(hours)))
+  })
 }
+el('nudging-on').addEventListener('click', async () => render(await act(nudgingOn())))
 
 el('new-task').addEventListener('keydown', async e => {
   if (e.key !== 'Enter') return
