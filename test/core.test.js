@@ -658,7 +658,6 @@ test('the timer never changes whether sites nudge', () => {
   ]
   for (const s of phases) {
     assert.equal(view(s, T0, CFG).nudging, true, `${s.phase} nudges when nudging is on`)
-    assert.equal(view(s, T0, CFG).nudgingPhase, true, 'nudgingPhase mirrors nudging for older clients')
     const off = reduce(s, { type: 'NUDGE_OFF', hours: 1 }, T0, CFG).state
     assert.equal(view(off, T0, CFG).nudging, false, `${s.phase} does not nudge when nudging is off`)
     assert.equal(off.phase, s.phase, 'and the phase is untouched')
@@ -760,12 +759,12 @@ test('with Linear off, adding a task asks for nothing', () => {
 })
 
 test('with Linear on, adding a task asks for an issue in the chosen project', () => {
-  const { state, effects } = reduce(initialState(), { type: 'TASK_ADD', text: 'route the PCB', project: PROJ }, T0, LIN)
+  const { state, effects } = reduce(initialState(), { type: 'TASK_ADD', text: 'route the PCB', project: PROJ, linearId: 'uuid-1' }, T0, LIN)
   assert.deepEqual(state.tasks[0], {
-    id: 1, text: 'route the PCB', done: false, project: PROJ, linear: null, linearPending: true,
+    id: 1, text: 'route the PCB', done: false, project: PROJ, linear: null, linearPending: true, linearId: 'uuid-1',
   })
   assert.deepEqual(effects.find(e => e.type === 'linearCreate'),
-    { type: 'linearCreate', taskId: 1, text: 'route the PCB', projectId: 'proj-9' })
+    { type: 'linearCreate', taskId: 1, text: 'route the PCB', projectId: 'proj-9', issueId: 'uuid-1' })
 })
 
 test('a task with no project asks for an issue with no project', () => {
@@ -951,4 +950,36 @@ test('NUDGE_EVENT logs a shown or back outcome and changes no state', () => {
   }
   assert.deepEqual(reduce(s, { type: 'NUDGE_EVENT', site: 'reddit.com', outcome: 'evil' }, T0, CFG).effects, [])
   assert.deepEqual(reduce(s, { type: 'NUDGE_EVENT', site: '', outcome: 'shown' }, T0, CFG).effects, [])
+})
+
+// --- final-review fixes --------------------------------------------------------
+
+// Replaces "nudgingPhase mirrors nudging for older clients". An extension not
+// yet reloaded runs the OLD service worker, which nudges on phase alone; if the
+// pause screen were told nudging is off it released, the worker intercepted
+// again, and every watched site looped. The alias keeps its old meaning so an
+// old extension stays consistent with itself until it is reloaded.
+test('nudgingPhase keeps the old phase rule, whatever the nudging switch says', () => {
+  for (const [phase, old] of [[PHASE.IDLE, true], [PHASE.WORK, true], [PHASE.SHORT_BREAK, true], [PHASE.LONG_BREAK, false]]) {
+    const s = { ...initialState(), phase, endsAt: phase === PHASE.IDLE ? null : T0 + MIN }
+    const off = reduce(s, { type: 'NUDGE_OFF', hours: 1 }, T0, CFG).state
+    assert.equal(view(s, T0, CFG).nudgingPhase, old, phase)
+    assert.equal(view(off, T0, CFG).nudgingPhase, old, `${phase} with nudging off`)
+  }
+})
+
+test('TASK_ADD keeps the issue id chosen for Linear so a retry can never create a second issue', () => {
+  const { state, effects } = reduce(initialState(), { type: 'TASK_ADD', text: 'a', linearId: 'uuid-1' }, T0, LIN)
+  assert.equal(state.tasks[0].linearId, 'uuid-1')
+  assert.equal(effects.find(e => e.type === 'linearCreate').issueId, 'uuid-1')
+  const off = reduce(initialState(), { type: 'TASK_ADD', text: 'a', linearId: 'uuid-1' }, T0, CFG).state
+  assert.equal(off.tasks[0].linearId, null, 'no Linear, no id')
+})
+
+test('LINEAR_SYNC links a pending task to the issue it already created instead of adding a duplicate', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'write report', linearId: 'uuid-1' }, T0, LIN).state
+  const { state } = reduce(s, { type: 'LINEAR_SYNC', issues: [{ ...ISSUE('x', 'unstarted', 'write report'), id: 'uuid-1' }] }, T0, LIN)
+  assert.equal(state.tasks.length, 1)
+  assert.equal(state.tasks[0].linear.id, 'uuid-1')
+  assert.equal(state.tasks[0].linearPending, false)
 })

@@ -12,8 +12,10 @@ import { DEFAULTS } from '../daemon/config.js'
 const KEY = 'dummy-key-for-tests'
 
 const fake = {
+  loseNextReply: false,
   created: [], updates: [], failCreates: 0, failWith: 'getaddrinfo ENOTFOUND api.linear.app', active: [], projectsCalls: 0,
-  reset() { this.created = []; this.updates = []; this.failCreates = 0; this.failWith = 'getaddrinfo ENOTFOUND api.linear.app'; this.active = []; this.projectsCalls = 0 },
+  byId: {},
+  reset() { this.byId = {}; this.loseNextReply = false; this.created = []; this.updates = []; this.failCreates = 0; this.failWith = 'getaddrinfo ENOTFOUND api.linear.app'; this.active = []; this.projectsCalls = 0 },
 }
 
 async function fakeFetch(url, init) {
@@ -22,14 +24,27 @@ async function fakeFetch(url, init) {
   if (query.includes('issueCreate')) {
     if (fake.failCreates > 0) { fake.failCreates--; throw new Error(fake.failWith) }
     const n = 100 + fake.created.length
+    // Like Linear: an issue id may only be used once.
+    if (variables.input.id && fake.created.some(c => c.id === variables.input.id)) {
+      return { ok: true, status: 200, json: async () => ({ errors: [{ message: 'duplicate id' }] }) }
+    }
     fake.created.push(variables.input)
-    return ok({ issueCreate: { success: true, issue: { id: `iss-${n}`, identifier: `IBR-${n}`, url: `https://linear.app/x/IBR-${n}` } } })
+    fake.byId[variables.input.id ?? `iss-${n}`] = { id: variables.input.id ?? `iss-${n}`, identifier: `IBR-${n}`, url: `https://linear.app/x/IBR-${n}`, title: variables.input.title, state: { type: 'unstarted', name: 'Todo' } }
+    if (fake.loseNextReply) { fake.loseNextReply = false; throw new Error('The operation was aborted due to timeout') }
+    return ok({ issueCreate: { success: true, issue: { id: variables.input.id ?? `iss-${n}`, identifier: `IBR-${n}`, url: `https://linear.app/x/IBR-${n}` } } })
   }
   if (query.includes('issueUpdate')) {
     fake.updates.push([variables.id, variables.stateId])
     return ok({ issueUpdate: { success: true } })
   }
-  if (query.includes('active:')) return ok({ active: { nodes: fake.active }, linked: { nodes: [] } })
+  if (query.includes('active:')) {
+    const created = Object.values(fake.byId)
+    return ok({ active: { nodes: [...fake.active, ...created] }, linked: { nodes: [] } })
+  }
+  if (query.includes('issue(id')) {
+    const i = fake.byId[variables.id]
+    return i ? ok({ issue: i }) : { ok: true, status: 200, json: async () => ({ errors: [{ message: 'Entity not found: Issue' }] }) }
+  }
   if (query.includes('states {')) {
     return ok({ team: { states: { nodes: [
       { id: 's-todo', name: 'Todo', type: 'unstarted' }, { id: 's-done', name: 'Done', type: 'completed' },
@@ -87,7 +102,11 @@ test('adding a task creates the Linear issue in the chosen project and links it'
   assert.equal(v.linearEnabled, true)
   assert.equal(v.tasks[0].linearPending, true, 'the answer comes back before Linear does')
   await handle.linearIdle()
-  assert.deepEqual(fake.created, [{ teamId: 'team-1', title: 'route the board', projectId: 'p1' }])
+  // The issue id is chosen here (a UUID) so a retry can never create a second issue.
+  assert.equal(fake.created.length, 1)
+  const { id, ...rest } = fake.created[0]
+  assert.deepEqual(rest, { teamId: 'team-1', title: 'route the board', projectId: 'p1' })
+  assert.match(id, /^[0-9a-f-]{36}$/)
   const t = (await state()).tasks[0]
   assert.equal(t.linear.identifier, 'IBR-100')
   assert.equal(t.linearPending, false)
@@ -126,7 +145,8 @@ test('ticking a linked task moves the issue to Done and back', async () => {
   await handle.linearIdle()
   await post('/tasks', { action: 'toggle', id: v.tasks[0].id })
   await handle.linearIdle()
-  assert.deepEqual(fake.updates, [['iss-100', 's-done'], ['iss-100', 's-todo']])
+  const issue = fake.created[0].id
+  assert.deepEqual(fake.updates, [[issue, 's-done'], [issue, 's-todo']])
 })
 
 test('removing a linked task cancels its issue in Linear', async () => {
@@ -134,7 +154,21 @@ test('removing a linked task cancels its issue in Linear', async () => {
   await handle.linearIdle()
   await post('/tasks', { action: 'remove', id: v.tasks[0].id })
   await handle.linearIdle()
-  assert.deepEqual(fake.updates, [['iss-100', 's-cancel']])
+  assert.deepEqual(fake.updates, [[fake.created[0].id, 's-cancel']])
+})
+
+test('a create whose reply was lost is not created twice, and the task is linked once', async () => {
+  fake.loseNextReply = true
+  await post('/tasks', { action: 'add', text: 'write report' })
+  await handle.linearIdle()
+  // Recovered either in the same attempt (getIssue by the chosen id) or by the
+  // next sync; both must end with one issue and one linked task.
+  await handle.linearSync()
+  const tasks = (await state()).tasks
+  assert.equal(fake.created.length, 1, 'one issue in Linear')
+  assert.equal(tasks.length, 1, 'one task here')
+  assert.equal(tasks[0].linearPending, false)
+  assert.equal(tasks[0].linear.identifier, 'IBR-100')
 })
 
 test('a sync pulls in active Linear issues as tasks', async () => {

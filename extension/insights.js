@@ -329,11 +329,12 @@ try {
 } catch {}
 el('range').addEventListener('change', () => {
   try { localStorage.setItem('insightsRange', el('range').value) } catch {}
-  let resizeTimer = null
+  load()
+})
+
+let resizeTimer = null
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer)
   resizeTimer = setTimeout(() => { if (last) draw() }, 150)
-})
-load()
 })
 load()

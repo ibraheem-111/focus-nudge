@@ -52,7 +52,8 @@ click "Load unpacked", and select the `extension/` directory.
     focus task route the board --project pcb   file its Linear issue under a project
     focus task done 3        tick one off (also: task toggle <id>)
     focus task rm 3          remove one (cancels its Linear issue if it is still open)
-    focus task clear         empty the list (ids restart at 1 once it is empty)
+    focus task clear         empty the list (ids restart at 1 once it is empty; open
+                             Linear issues on the list are cancelled)
     focus task clear done    remove only the ticked-off tasks
 
     focus sites              list the watched domains

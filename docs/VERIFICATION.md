@@ -6,11 +6,13 @@ Run after any change to the daemon, the policy, or the extension.
     systemctl --user restart focus-nudge
 
 Then reload the extension at `chrome://extensions` (the reload icon on the
-focus-nudge card) and walk the browser rows below.
+focus-nudge card) and walk the browser rows below. Reloading the extension
+first and then restarting the daemon is the smoothest order; the other order
+works too, but an old extension keeps nudging by phase until it is reloaded.
 
 ## Automated
 
-These run in `npm test` and need no browser. 307 tests.
+These run in `npm test` and need no browser. 317 tests.
 
 | Area | File | Covers |
 |---|---|---|
@@ -87,7 +89,7 @@ Nobody has checked these. Do not assume they work.
 | 42 | Nudging on during a break | in a short or long break with nudging on, a watched site IS paused |
 | 43 | "Until I turn it on" | the popup shows `nudging off until you turn it back on` and the Turn nudging on button; it stays off across a daemon restart |
 | 44 | A timed off-switch ends silently | when the hour runs out, a "Nudging back on" notification with NO sound |
-| 45 | An extension not reloaded yet still works | before reloading the extension after the daemon upgrade, nudging off still lets sites through (the `nudgingPhase` alias) |
+| 45 | An extension not reloaded yet stays consistent | after the daemon restart and BEFORE reloading the extension, a watched site shows the pause screen and it stays put (no flicker or redirect loop), even with nudging off; after the reload, nudging off lets it through |
 | 46 | Adding a task with a project | the project picker lists the Linear projects; the new task gets an `IBR-n` link within a second or two, and the issue is in Linear under that project |
 | 47 | The `IBR-n` link | opens the issue in a new tab and does NOT tick the task |
 | 48 | Tick and untick a linked task | the issue moves to Done, then back to Todo |

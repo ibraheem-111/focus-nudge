@@ -150,3 +150,27 @@ test('cancel moves the issue to the canceled state', async () => {
   const update = fetch.calls.find(c => c.body.query.includes('issueUpdate'))
   assert.deepEqual([update.body.variables.id, update.body.variables.stateId], ['iss-1', 's-cancel'])
 })
+
+test('createIssue sends the client-chosen id when given one', async () => {
+  const fetch = fakeFetch(() => ({ data: { issueCreate: { success: true, issue: { id: 'u-1', identifier: 'IBR-1', url: 'u' } } } }))
+  await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).createIssue({ title: 't', id: 'u-1' })
+  assert.equal(fetch.calls[0].body.variables.input.id, 'u-1')
+})
+
+test('getIssue returns the link for an existing issue and null for a missing one', async () => {
+  const fetch = fakeFetch(body => body.variables.id === 'u-1'
+    ? { data: { issue: { id: 'u-1', identifier: 'IBR-7', url: 'https://l/IBR-7' } } }
+    : { errors: [{ message: 'Entity not found: Issue' }] })
+  const linear = createLinear({ apiKey: KEY, teamId: TEAM, fetch })
+  assert.deepEqual(await linear.getIssue('u-1'), { id: 'u-1', identifier: 'IBR-7', url: 'https://l/IBR-7' })
+  assert.equal(await linear.getIssue('nope'), null)
+})
+
+test('activeIssues with no linked ids never asks for "issues whose id is in []"', async () => {
+  // Unverified whether Linear reads an empty `in` as "nothing" or "no filter";
+  // the second would import arbitrary issues from the whole workspace.
+  const fetch = fakeFetch(() => ({ data: { active: { nodes: [] } } }))
+  await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).activeIssues([])
+  assert.equal(fetch.calls[0].body.query.includes('linked'), false)
+  assert.equal('ids' in fetch.calls[0].body.variables, false)
+})

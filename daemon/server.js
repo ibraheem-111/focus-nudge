@@ -2,6 +2,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { loadConfig, saveConfig, writeAtomic, PATHS, mergeConfig } from './config.js'
 import { initialState, reduce, settle, view, PHASE, LEGACY_SNOOZED, NUDGE_OUTCOMES } from './core.js'
 import { createLinear, loadLinearKey } from './linear.js'
@@ -158,7 +159,7 @@ export function createServer(opts = {}) {
       if (e.type === 'notify') notify(e.title, e.body, e.sound)
       else if (e.type === 'log') appendLog(e.event, e.data)
       else if (e.type === 'openUrls') openUrls(e.urls)
-      else if (e.type === 'linearCreate') linearJob(() => createFor(e.taskId, e.text, e.projectId))
+      else if (e.type === 'linearCreate') linearJob(() => createFor(e.taskId, e.text, e.projectId, e.issueId))
       else if (e.type === 'linearSetDone') linearJob(() => linear.setDone(e.issueId, e.done))
       else if (e.type === 'linearCancel') linearJob(() => linear.cancel(e.issueId))
       else if (e.type === 'setSites') {
@@ -226,10 +227,18 @@ export function createServer(opts = {}) {
     return linearChain
   }
 
-  async function createFor(taskId, text, projectId) {
+  async function createFor(taskId, text, projectId, issueId = null) {
     const still = state.tasks.find(t => t.id === taskId && t.text === text && t.linearPending)
     if (!still) return   // removed, or linked by an earlier attempt
-    const issue = await linear.createIssue({ title: text, projectId })
+    let issue
+    try {
+      issue = await linear.createIssue({ title: text, projectId, id: issueId })
+    } catch (err) {
+      // A retry after a lost reply: the issue may already exist under the id we
+      // chose. Link it rather than failing forever (or creating a second one).
+      issue = issueId ? await linear.getIssue(issueId).catch(() => null) : null
+      if (!issue) throw err
+    }
     dispatch({ type: 'TASK_LINKED', taskId, text, linear: issue })
   }
 
@@ -237,7 +246,7 @@ export function createServer(opts = {}) {
   function linearSync() {
     if (!linear) return linearChain
     for (const t of state.tasks.filter(t => t.linearPending && !t.done)) {
-      linearJob(() => createFor(t.id, t.text, t.project?.id ?? null))
+      linearJob(() => createFor(t.id, t.text, t.project?.id ?? null, t.linearId ?? null))
     }
     return linearJob(async () => {
       const linkedIds = state.tasks.filter(t => t.linear).map(t => t.linear.id)
@@ -347,7 +356,10 @@ export function createServer(opts = {}) {
             const map = { add: 'TASK_ADD', toggle: 'TASK_TOGGLE', remove: 'TASK_REMOVE', clear: 'TASK_CLEAR', clearDone: 'TASK_CLEAR_DONE' }
             const type = map[body.action]
             if (!type) return send(400, { error: 'unknown task action' })
-            return send(200, dispatch({ type, text: body.text, id: body.id, project: body.project }))
+            return send(200, dispatch({
+              type, text: body.text, id: body.id, project: body.project,
+              linearId: linear && type === 'TASK_ADD' ? randomUUID() : undefined,
+            }))
           }
           case '/sites': {
             const map = { add: 'SITE_ADD', remove: 'SITE_REMOVE' }

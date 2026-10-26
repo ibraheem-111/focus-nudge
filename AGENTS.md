@@ -122,7 +122,7 @@ dependency rule below.
 
 ## Testing
 
-    npm test        # 307 tests, no browser needed
+    npm test        # 317 tests, no browser needed
 
 - **Tests must never touch `~/.config/focus-nudge/`.** It holds the user's real
   settings and block history. Use `fs.mkdtempSync` scratch dirs. This has bitten

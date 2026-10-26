@@ -124,7 +124,6 @@ test('POST /snooze switches nudging off and keeps the running block', async () =
   const v = await post('/snooze', { hours: 2 })
   assert.equal(v.phase, 'WORK', 'the work block survives')
   assert.equal(v.nudging, false)
-  assert.equal(v.nudgingPhase, false, 'old clients see the same answer')
   assert.ok(v.nudgeOffUntil > Date.now())
   await post('/nudging', { action: 'on' })
 })

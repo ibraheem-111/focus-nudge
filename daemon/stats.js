@@ -96,10 +96,12 @@ export function insights(text, {
     streak: { current: 0, best: 0 },
     tasksDone: 0, tasksAdded: 0, continued: 0, nudgeOffHours: 0, nudgeOffs: 0,
   }
-  const byDay = {}
+  // Null-prototype maps: keys come from the log (site names), and a site
+  // called __proto__ must be a row, not a write onto Object.prototype.
+  const byDay = Object.create(null)
   const byHour = Array.from({ length: 24 }, () => ({ blocks: 0, continued: 0, nudgeOffs: 0 }))
   const byWeekday = Array.from({ length: 7 }, () => ({ blocks: 0, continued: 0 }))
-  const bySite = {}
+  const bySite = Object.create(null)
   const blockOutcomes = { completed: 0, stopped: 0, nudgeOff: 0 }
   const nudgeOffDurations = {}
   const funnel = { shown: 0, back: 0, continued: 0, saved: 0 }
@@ -110,8 +112,19 @@ export function insights(text, {
 
   // A nudge-off lasts until its hours run out or the next on/off event, whichever
   // comes first. An indefinite one with nothing after it is still running.
+  // The OLD daemon's snooze was a phase, so any phase change ended it too.
   const OFF_EVENTS = new Set(['snooze', 'nudge_off'])
   const END_EVENTS = new Set(['snooze', 'snooze_end', 'nudge_off', 'nudge_on'])
+  // When the next end event comes after each entry, found in one backward pass
+  // instead of a forward scan per off event.
+  const nextEnd = new Array(entries.length)
+  const nextEndLegacy = new Array(entries.length)
+  for (let i = entries.length - 1, end = now, legacy = now; i >= 0; i--) {
+    nextEnd[i] = end
+    nextEndLegacy[i] = legacy
+    if (END_EVENTS.has(entries[i].event)) { end = entries[i].at; legacy = entries[i].at }
+    else if (entries[i].event === 'phase') legacy = entries[i].at
+  }
   let openWork = false
 
   for (let i = 0; i < entries.length; i++) {
@@ -190,8 +203,7 @@ export function insights(text, {
       const label = offLabel(e)
       nudgeOffDurations[label] = (nudgeOffDurations[label] ?? 0) + 1
       const timedEnd = label === 'until on' || !Number.isFinite(e.hours) ? Infinity : at + e.hours * 3_600_000
-      const next = entries.slice(i + 1).find(n => END_EVENTS.has(n.event))
-      const end = Math.min(timedEnd, next ? next.at : now)
+      const end = Math.min(timedEnd, e.event === 'snooze' ? nextEndLegacy[i] : nextEnd[i])
       kpis.nudgeOffHours += Math.max(0, end - at) / 3_600_000
     }
   }

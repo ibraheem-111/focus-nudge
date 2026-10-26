@@ -226,13 +226,16 @@ export function reduce(state, action, now, config) {
       const project = p && typeof p.id === 'string' && p.id && typeof p.name === 'string'
         ? { id: p.id, name: p.name } : null
       const linearPending = Boolean(config.linearEnabled)
+      // The issue id is chosen up front (server.js supplies a UUID) and kept, so
+      // a retry after a lost reply reuses it and Linear cannot make a second issue.
+      const linearId = linearPending && typeof action.linearId === 'string' && action.linearId ? action.linearId : null
       const id = state.nextTaskId
       effects.push({ type: 'log', event: 'task_added', data: { linear: linearPending } })
-      if (linearPending) effects.push({ type: 'linearCreate', taskId: id, text, projectId: project?.id ?? null })
+      if (linearPending) effects.push({ type: 'linearCreate', taskId: id, text, projectId: project?.id ?? null, issueId: linearId })
       return {
         state: {
           ...state,
-          tasks: [...state.tasks, { id, text, done: false, project, linear: null, linearPending }],
+          tasks: [...state.tasks, { id, text, done: false, project, linear: null, linearPending, linearId }],
           nextTaskId: id + 1,
         },
         effects,
@@ -317,7 +320,16 @@ export function reduce(state, action, now, config) {
       let nextTaskId = state.nextTaskId
       let added = 0
       for (const issue of issues) {
-        if (linked.has(issue.id) || dismissed.has(issue.id) || CLOSED_TYPES.has(issue.stateType)) continue
+        if (linked.has(issue.id) || dismissed.has(issue.id)) continue
+        // An issue this list already asked for, whose reply never arrived.
+        const mine = tasks.findIndex(t => t.linearPending && t.linearId === issue.id)
+        if (mine !== -1) {
+          tasks[mine] = { ...tasks[mine], linear: { id: issue.id, identifier: issue.identifier, url: issue.url }, linearPending: false }
+          linked.add(issue.id)
+          changed = true
+          continue
+        }
+        if (CLOSED_TYPES.has(issue.stateType)) continue
         linked.add(issue.id)
         tasks.push({
           id: nextTaskId++, text: issue.title || issue.identifier, done: false, project: null,
@@ -410,8 +422,11 @@ export function view(state, now, config) {
     graceMinutes: config.graceMinutes,
     linearEnabled: Boolean(config.linearEnabled),
     nudging: nudgingOn(state, now),
-    // Alias of `nudging` for an extension that has not been reloaded yet.
-    nudgingPhase: nudgingOn(state, now),
+    // The OLD meaning, kept for an extension not reloaded yet: its service
+    // worker still nudges on phase alone, and a pause screen told "off" released
+    // straight back into it — a redirect loop. Consistent with itself, an old
+    // extension simply nudges until it is reloaded.
+    nudgingPhase: NUDGING_PHASES.has(state.phase),
     nudgeOffUntil: state.nudgeOffIndefinite ? null : state.nudgeOffUntil ?? null,
     nudgeOffIndefinite: Boolean(state.nudgeOffIndefinite),
     serverTime: now,

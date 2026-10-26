@@ -86,9 +86,10 @@ export function createLinear({ apiKey, teamId, fetch = globalThis.fetch }) {
   }
 
   return {
-    async createIssue({ title, projectId = null }) {
+    async createIssue({ title, projectId = null, id = null }) {
       const input = { teamId, title }
       if (projectId) input.projectId = projectId
+      if (id) input.id = id
       const data = await gql(
         'mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }',
         { input },
@@ -96,6 +97,18 @@ export function createLinear({ apiKey, teamId, fetch = globalThis.fetch }) {
       const issue = data.issueCreate?.issue
       if (!data.issueCreate?.success || !issue) throw new Error('linear: issueCreate did not succeed')
       return { id: issue.id, identifier: issue.identifier, url: issue.url }
+    },
+
+    // The link for an issue, or null when it does not exist (yet).
+    async getIssue(issueId) {
+      try {
+        const data = await gql('query($id: String!) { issue(id: $id) { id identifier url } }', { id: issueId })
+        const i = data.issue
+        return i ? { id: i.id, identifier: i.identifier, url: i.url } : null
+      } catch (err) {
+        if (/not found/i.test(err.message)) return null
+        throw err
+      }
     },
 
     async setDone(issueId, done) {
@@ -112,12 +125,16 @@ export function createLinear({ apiKey, teamId, fetch = globalThis.fetch }) {
     // Every active issue in the team, plus the issues already linked to a task
     // whatever their state — that is how a completion in Linear is noticed.
     async activeIssues(extraIds = []) {
+      // With no linked ids the `linked` alias is left out entirely: whether an
+      // empty `in` filter means "none" or "no filter" is not something to bet on,
+      // when the wrong answer imports issues from the whole workspace.
+      const withLinked = extraIds.length > 0
       const data = await gql(
-        `query($team: ID!, $states: [String!], $ids: [ID!]) {
+        `query($team: ID!, $states: [String!]${withLinked ? ', $ids: [ID!]' : ''}) {
           active: issues(first: 100, filter: { team: { id: { eq: $team } }, state: { name: { in: $states } } }) { nodes { ${ISSUE_FIELDS} } }
-          linked: issues(first: 100, filter: { id: { in: $ids } }) { nodes { ${ISSUE_FIELDS} } }
+          ${withLinked ? `linked: issues(first: 100, filter: { id: { in: $ids } }) { nodes { ${ISSUE_FIELDS} } }` : ''}
         }`,
-        { team: teamId, states: ACTIVE_STATE_NAMES, ids: extraIds },
+        withLinked ? { team: teamId, states: ACTIVE_STATE_NAMES, ids: extraIds } : { team: teamId, states: ACTIVE_STATE_NAMES },
       )
       const seen = new Map()
       for (const n of [...(data.active?.nodes ?? []), ...(data.linked?.nodes ?? [])]) {

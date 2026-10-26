@@ -149,3 +149,21 @@ test('since narrows every breakdown, but the calendar and streak keep full histo
   assert.equal(r.kpis.blocks.all, 2, 'all-time stays all-time')
   assert.equal(r.since, D0 + 2 * DAY)
 })
+
+test('an old snooze ended when a phase began; a new nudge_off does not', () => {
+  // The old daemon's snooze WAS a phase, so `focus start` ended it. Counting its
+  // full hours overstated the time nudging was really off.
+  const r = run([
+    { at: D0, event: 'snooze', hours: 4 },
+    { at: D0 + H, event: 'phase', phase: 'WORK' },              // ended the snooze after 1h
+    { at: D0 + 10 * H, event: 'nudge_off', hours: 2, indefinite: false },
+    { at: D0 + 10.5 * H, event: 'phase', phase: 'WORK' },       // does not end it: 2h
+  ])
+  assert.equal(r.kpis.nudgeOffHours, 3)
+})
+
+test('bySite and byDay are safe from a site called __proto__', () => {
+  const r = run([{ at: D0, event: 'nudge_shown', site: '__proto__' }])
+  assert.equal(({}).shown, undefined, 'Object.prototype untouched')
+  assert.equal(r.bySite['__proto__'].shown, 1)
+})
