@@ -51,6 +51,14 @@ personal workspace, so a mistaken write is not a team-visible incident — but i
 is still the user's real planning data. Do not create, close, or re-state
 issues unless asked. Prefer reads.
 
+**The running daemon writes to Linear on the user's behalf** (since the
+two-way task sync): adding a task creates an issue, ticking moves it to
+Done/Todo, removing an open task cancels it. That is the feature the user asked
+for, and it goes through `daemon/linear.js` only. `createServer()` builds no
+Linear client unless one is passed in — only the real entry point builds one
+from the key — so a test can never reach the real API. Keep it that way: tests
+inject a fake `linear` or a fake `fetch`.
+
 Zero-dependency access is fine: the daemon and any script can use Node's
 global `fetch` against the GraphQL endpoint. Do not add an SDK — see the
 dependency rule below.
@@ -85,13 +93,19 @@ dependency rule below.
    the user is a bug.
 3. **Never auto-delete the user's data.** Snooze and long break used to archive
    the micro-task list; that silently destroyed 29 open tasks over two weeks
-   before it was reported. Only the user decides when a task is done.
+   before it was reported. Only the user decides when a task is done. Linear
+   sync follows the same rule: it may tick a task closed in Linear, but never
+   unticks one, never deletes one, and never re-adds one the user removed.
 4. **The daemon is the sole opener of saved links** (`xdg-open` via the
    `openUrls` effect). Extension pages must not open them too, or every link
    opens twice.
 5. **Only phase EXPIRY makes a sound.** User-clicked transitions stay silent —
    a tool that beeps on every click becomes one you mute, and then the
    notification that mattered is silenced too.
+6. **Nudging and the timer are independent switches.** Switching nudging off
+   must never end, pause or reset a work block, and no timer transition may
+   change whether sites nudge. Coupling them made the pomodoro unusable for
+   work that lives on YouTube and Reddit (11 work blocks were ended by a snooze).
 
 ## House rules
 
@@ -108,7 +122,7 @@ dependency rule below.
 
 ## Testing
 
-    npm test        # 210 tests, no browser needed
+    npm test        # 307 tests, no browser needed
 
 - **Tests must never touch `~/.config/focus-nudge/`.** It holds the user's real
   settings and block history. Use `fs.mkdtempSync` scratch dirs. This has bitten

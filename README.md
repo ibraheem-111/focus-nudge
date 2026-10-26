@@ -42,13 +42,16 @@ click "Load unpacked", and select the `extension/` directory.
     focus pause              pause the running phase
     focus skip               advance to the next phase
     focus stop               back to idle, clears the cycle
-    focus break              begin a long break, opening any saved links
-    focus off 2h             stop nudging for a while: 2h, 90m, or a bare number of hours
+    focus break              begin a long break
+    focus off 2h             switch nudging off for a while: 2h, 90m, or a bare number of hours
+    focus off                switch nudging off until you turn it back on
+    focus on                 switch nudging back on
 
     focus task               list the micro-tasks
     focus task "fix the auth redirect"
+    focus task route the board --project pcb   file its Linear issue under a project
     focus task done 3        tick one off (also: task toggle <id>)
-    focus task rm 3          remove one
+    focus task rm 3          remove one (cancels its Linear issue if it is still open)
     focus task clear         empty the list (ids restart at 1 once it is empty)
     focus task clear done    remove only the ticked-off tasks
 
@@ -56,7 +59,7 @@ click "Load unpacked", and select the `extension/` directory.
     focus sites add news.ycombinator.com
     focus sites remove news.ycombinator.com
 
-    focus queue              list links saved for your next long break
+    focus queue              list links saved for the next time you switch nudging off
     focus queue drain        open them now and empty the queue
 
     focus stats              blocks today, last 7 days, all time, and a daily history
@@ -64,9 +67,41 @@ click "Load unpacked", and select the `extension/` directory.
     focus doctor             diagnose a machine where the daemon or unit isn't working
     focus --help             full usage text
 
-Phases never advance on their own: an expired block waits for you. Watched sites
-are nudged during work AND short breaks — a long break or an explicit
-`focus off` are the only windows where they open freely.
+Phases never advance on their own: an expired block waits for you.
+
+**Nudging and the timer are two independent switches.** Nudging is on unless
+you switch it off (`focus off`, or the popup's Off 1h / 2h / 4h / Until I turn
+it on), in every phase — work, breaks, idle. Switching it off never touches the
+timer: a running work block keeps running, so the pomodoro still works while
+YouTube plays music in the background. And the timer never changes whether a
+site nudges. Switching nudging off opens any links you saved for later; a timed
+off-switch ends silently.
+
+### Linear
+
+With `LINEAR_API_KEY` in the repo's `.env` (or the daemon's environment), the
+micro-task list and the IBR team in Linear are kept in step:
+
+- adding a task creates a Linear issue, optionally under a project — pick one
+  in the popup or dashboard, or `--project <prefix>` on the CLI;
+- ticking a task done moves its issue to Done, and unticking moves it back to Todo;
+- removing an open task (`task rm`, `task clear`, the × button) cancels its
+  issue; clearing tasks already ticked done leaves their issues Done;
+- every minute, Todo / In Progress / In Review issues show up in the task list,
+  and an issue closed in Linear gets ticked here. A task you ticked here is never
+  unticked by Linear, and one you removed is never brought back.
+
+If Linear is unreachable the task is kept and marked pending, and the daemon
+retries every minute. Without a key, everything works as before, locally.
+
+### Insights
+
+The popup and dashboard link to an insights page: focus time, completed blocks
+and streaks, a 26-week calendar, blocks against continue-anyway over time, your
+hour-of-day and weekday patterns, a per-site table, what you do when a nudge
+appears, how work blocks end, and how long nudging gets switched off. Every
+chart follows a 7 / 30 / 90-day / all-time range. It is read from `log.jsonl`;
+nothing leaves the machine.
 
 ## How it fits together
 
@@ -80,7 +115,13 @@ are nudged during work AND short breaks — a long break or an explicit
   rule lives here, with no I/O and an injected clock, which is why it can be
   tested exhaustively.
 - `daemon/server.js` — the only component that performs I/O: HTTP on
-  127.0.0.1:7373, atomic persistence, `notify-send`, and the append-only log.
+  127.0.0.1:7373, atomic persistence, `notify-send`, the append-only log, and
+  the Linear calls core.js asks for (`linearCreate`, `linearSetDone`,
+  `linearCancel`), run one at a time.
+- `daemon/linear.js` — a zero-dependency GraphQL client for those calls. The API
+  key goes into the request header and nowhere else.
+- `daemon/stats.js` — pure summaries of `log.jsonl` for `focus stats` and the
+  insights page.
 - `extension/policy.js` — the pure allow-or-nudge decision.
 - `extension/sw.js` — polls the daemon and intercepts navigation, both full page
   loads (`onBeforeNavigate`) and in-app navigation (`onHistoryStateUpdated`).
@@ -88,6 +129,8 @@ are nudged during work AND short breaks — a long break or an explicit
   could lapse without the pause screen ever returning.
 - `extension/interstitial.*` — the pause screen: quote, live countdown, tasks,
   and the three buttons (`continue anyway`, `back to work`, `save for later`).
+- `extension/insights.*` — the insights page; `insights-model.js` holds its
+  pure calendar and range arithmetic.
 - `cli/focus`, `extension/popup.*`, `extension/dashboard.*` — thin clients. They
   hold no state, so they cannot disagree about the current phase.
 - `extension/newtab.html` is not a live page. It is a tombstone stub left
@@ -122,7 +165,12 @@ web page cannot suppress its own `Origin`. Without this, any page you visited
 - **The extension is loaded unpacked**, so it is a couple of clicks from being
   disabled. A managed-policy install would make it harder to defeat on impulse.
 - **`log.jsonl` grows without bound.** At roughly one block per 25 minutes this
-  is a few kilobytes a day, but nothing rotates it. `focus stats` reads it whole.
+  is a few kilobytes a day, but nothing rotates it. `focus stats` and the
+  insights page read it whole.
+- **Insights before this version are partial.** "Nudge shown" and "turned back"
+  are logged from now on, and older blocks have no recorded length (they count
+  as a full block).
+- **Linear sync is one team, IBR.** The team id is fixed in `daemon/server.js`.
 - **Blocks are counted per day, not per task.** Attributing a block to a task
   would mean either naming a task when you start one, or crediting every open
   task and inflating the numbers.
