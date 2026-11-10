@@ -105,7 +105,8 @@ test('adding a task creates the Linear issue in the chosen project and links it'
   // The issue id is chosen here (a UUID) so a retry can never create a second issue.
   assert.equal(fake.created.length, 1)
   const { id, ...rest } = fake.created[0]
-  assert.deepEqual(rest, { teamId: 'team-1', title: 'route the board', projectId: 'p1' })
+  // ...and it is filed in Todo, not the team's default Backlog.
+  assert.deepEqual(rest, { teamId: 'team-1', title: 'route the board', projectId: 'p1', stateId: 's-todo' })
   assert.match(id, /^[0-9a-f-]{36}$/)
   const t = (await state()).tasks[0]
   assert.equal(t.linear.identifier, 'IBR-100')

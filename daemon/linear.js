@@ -90,6 +90,12 @@ export function createLinear({ apiKey, teamId, fetch = globalThis.fetch }) {
       const input = { teamId, title }
       if (projectId) input.projectId = projectId
       if (id) input.id = id
+      // A task added here is work the user means to do now, so it goes to Todo
+      // rather than the team default (Backlog). If the states cannot be looked
+      // up, the issue is still created in the default: a task is never lost
+      // over its state.
+      const todo = await resolveStates().then(ids => ids.todo, () => null)
+      if (todo) input.stateId = todo
       const data = await gql(
         'mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }',
         { input },

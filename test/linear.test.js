@@ -26,6 +26,10 @@ function fakeFetch(answer) {
   return fn
 }
 
+// createIssue looks up the team's states first (to file new issues in Todo), so
+// a fake that creates issues answers that lookup too.
+const withStates = answer => (body, n) => (body.query.includes('states {') ? STATES : answer(body, n))
+
 test('requests go to the GraphQL endpoint with the raw key, no Bearer prefix', async () => {
   const fetch = fakeFetch(() => ({ data: { team: { projects: { nodes: [] } } } }))
   await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).projects()
@@ -35,21 +39,40 @@ test('requests go to the GraphQL endpoint with the raw key, no Bearer prefix', a
 })
 
 test('createIssue sends the title, team and project and returns the link', async () => {
-  const fetch = fakeFetch(() => ({
+  const fetch = fakeFetch(withStates(() => ({
     data: { issueCreate: { success: true, issue: { id: 'iss-1', identifier: 'IBR-40', url: 'https://linear.app/x/IBR-40' } } },
-  }))
+  })))
   const out = await createLinear({ apiKey: KEY, teamId: TEAM, fetch })
     .createIssue({ title: 'read the PX4 paper', projectId: 'proj-9' })
   assert.deepEqual(out, { id: 'iss-1', identifier: 'IBR-40', url: 'https://linear.app/x/IBR-40' })
-  assert.deepEqual(fetch.calls[0].body.variables.input, { teamId: TEAM, title: 'read the PX4 paper', projectId: 'proj-9' })
+  const create = fetch.calls.find(c => c.body.query.includes('issueCreate'))
+  assert.deepEqual(create.body.variables.input, { teamId: TEAM, title: 'read the PX4 paper', projectId: 'proj-9', stateId: 's-todo' })
+})
+
+// Asked for by the user: a task added in focus-nudge is work they mean to do now,
+// so its issue goes to Todo — not the team's default, which is Backlog.
+test('createIssue files the new issue in Todo, not the team default', async () => {
+  const fetch = fakeFetch(withStates(() => ({ data: { issueCreate: { success: true, issue: { id: 'i', identifier: 'IBR-1', url: 'u' } } } })))
+  await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).createIssue({ title: 't' })
+  const create = fetch.calls.find(c => c.body.query.includes('issueCreate'))
+  assert.equal(create.body.variables.input.stateId, 's-todo')
+})
+
+test('createIssue still creates the issue when the states cannot be looked up', async () => {
+  const fetch = fakeFetch(body => (body.query.includes('states {')
+    ? { data: { team: { states: { nodes: [] } } } }
+    : { data: { issueCreate: { success: true, issue: { id: 'i', identifier: 'IBR-1', url: 'u' } } } }))
+  const out = await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).createIssue({ title: 't' })
+  assert.equal(out.identifier, 'IBR-1', 'a task is never lost over its state')
 })
 
 test('createIssue without a project sends no projectId', async () => {
-  const fetch = fakeFetch(() => ({
+  const fetch = fakeFetch(withStates(() => ({
     data: { issueCreate: { success: true, issue: { id: 'i', identifier: 'IBR-1', url: 'u' } } },
-  }))
+  })))
   await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).createIssue({ title: 't', projectId: null })
-  assert.equal('projectId' in fetch.calls[0].body.variables.input, false)
+  const create = fetch.calls.find(c => c.body.query.includes('issueCreate'))
+  assert.equal('projectId' in create.body.variables.input, false)
 })
 
 test('GraphQL errors throw, and the message never contains the key', async () => {
@@ -70,7 +93,7 @@ test('an HTTP failure throws', async () => {
 })
 
 test('a failed issueCreate throws rather than returning nothing', async () => {
-  const fetch = fakeFetch(() => ({ data: { issueCreate: { success: false, issue: null } } }))
+  const fetch = fakeFetch(withStates(() => ({ data: { issueCreate: { success: false, issue: null } } })))
   await assert.rejects(createLinear({ apiKey: KEY, teamId: TEAM, fetch }).createIssue({ title: 't' }))
 })
 
@@ -152,9 +175,10 @@ test('cancel moves the issue to the canceled state', async () => {
 })
 
 test('createIssue sends the client-chosen id when given one', async () => {
-  const fetch = fakeFetch(() => ({ data: { issueCreate: { success: true, issue: { id: 'u-1', identifier: 'IBR-1', url: 'u' } } } }))
+  const fetch = fakeFetch(withStates(() => ({ data: { issueCreate: { success: true, issue: { id: 'u-1', identifier: 'IBR-1', url: 'u' } } } })))
   await createLinear({ apiKey: KEY, teamId: TEAM, fetch }).createIssue({ title: 't', id: 'u-1' })
-  assert.equal(fetch.calls[0].body.variables.input.id, 'u-1')
+  const create = fetch.calls.find(c => c.body.query.includes('issueCreate'))
+  assert.equal(create.body.variables.input.id, 'u-1')
 })
 
 test('getIssue returns the link for an existing issue and null for a missing one', async () => {
