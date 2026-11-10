@@ -95,8 +95,10 @@ dependency rule below.
 3. **Never auto-delete the user's data.** Snooze and long break used to archive
    the micro-task list; that silently destroyed 29 open tasks over two weeks
    before it was reported. Only the user decides when a task is done. Linear
-   sync follows the same rule: it may tick a task closed in Linear, but never
-   unticks one, never deletes one, and never re-adds one the user removed.
+   is the source of truth for where a LINKED ticket sits: sync ticks a task
+   closed in Linear, and a ticket parked in Backlog/Triage leaves the list
+   (it still exists in Linear, and returns when moved back to Todo). Sync never
+   unticks a task, never deletes an issue, and never re-adds one the user removed.
 4. **The daemon is the sole opener of saved links** (`xdg-open` via the
    `openUrls` effect). Extension pages must not open them too, or every link
    opens twice.

@@ -89,8 +89,11 @@ micro-task list and the IBR team in Linear are kept in step:
 - removing one open task (`task rm` or the × button) cancels its issue.
   `task clear` and Clear done never touch Linear — they only empty the list,
   and the cleared issues are not pulled back in;
+- new issues are filed in Todo;
 - every minute, Todo / In Progress / In Review issues show up in the task list,
-  and an issue closed in Linear gets ticked here. A task you ticked here is never
+  an issue closed in Linear gets ticked here, and an issue moved to Backlog
+  leaves the list (moving it back to Todo brings it back). Linear is the source
+  of truth for where a ticket sits. A task you ticked here is never
   unticked by Linear, and one you removed is never brought back.
 
 If Linear is unreachable the task is kept and marked pending, and the daemon

@@ -300,8 +300,10 @@ export function reduce(state, action, now, config) {
     }
 
     // The issues server.js fetched: every active issue in the team, plus the ones
-    // already linked whatever their state. Linear may close a task here; it may
-    // never reopen one the user ticked, or bring back one the user removed.
+    // already linked whatever their state. Linear is the source of truth for
+    // where a ticket sits: it may close a task here, and a ticket parked in
+    // Backlog leaves this list (and comes back when it is moved out again). It
+    // may never reopen a task the user ticked, or bring back one the user removed.
     case 'LINEAR_SYNC': {
       if (!config.linearEnabled || !Array.isArray(action.issues)) return { state, effects }
       const issues = action.issues.map(cleanIssue).filter(Boolean)
@@ -331,7 +333,7 @@ export function reduce(state, action, now, config) {
           changed = true
           continue
         }
-        if (CLOSED_TYPES.has(issue.stateType)) continue
+        if (!ACTIVE_TYPES.has(issue.stateType)) continue
         linked.add(issue.id)
         tasks.push({
           id: nextTaskId++, text: issue.title || issue.identifier, done: false, project: null,
@@ -339,9 +341,12 @@ export function reduce(state, action, now, config) {
         })
         added++
       }
-      if (!changed && added === 0) return { state, effects }
-      if (added || completed) effects.push({ type: 'log', event: 'linear_sync', data: { added, completed } })
-      return { state: { ...state, tasks, nextTaskId }, effects }
+      // Parked in Linear: off this list. Not dismissed, so un-parking brings it back.
+      const kept = tasks.filter(t => !(t.linear && PARKED_TYPES.has(byId.get(t.linear.id)?.stateType)))
+      const parked = tasks.length - kept.length
+      if (!changed && added === 0 && parked === 0) return { state, effects }
+      if (added || completed || parked) effects.push({ type: 'log', event: 'linear_sync', data: { added, completed, parked } })
+      return { state: withTasks({ ...state, nextTaskId }, kept), effects }
     }
 
     case 'QUEUE_ADD': {
@@ -473,6 +478,10 @@ function workedMinutes(state, now, config) {
 
 // Linear's closed state types. Duplicate is a team state of its own type here.
 const CLOSED_TYPES = new Set(['completed', 'canceled', 'duplicate'])
+// Not being worked on yet: the ticket belongs in the backlog, not this list.
+const PARKED_TYPES = new Set(['backlog', 'triage'])
+// The only states a ticket is pulled INTO this list from.
+const ACTIVE_TYPES = new Set(['unstarted', 'started'])
 
 function cleanLink(l) {
   if (!l || typeof l.id !== 'string' || !l.id) return null

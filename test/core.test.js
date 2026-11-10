@@ -833,7 +833,7 @@ test('LINEAR_SYNC adds active issues the list does not have yet', () => {
     { type: 'LINEAR_SYNC', issues: [ISSUE('17', 'started'), ISSUE('43', 'unstarted')] }, T0, LIN)
   assert.deepEqual(state.tasks.map(t => [t.id, t.text, t.done, t.linear.identifier, t.linearPending, t.project]),
     [[1, 'title 17', false, 'IBR-17', false, null], [2, 'title 43', false, 'IBR-43', false, null]])
-  assert.deepEqual(effects.find(e => e.event === 'linear_sync').data, { added: 2, completed: 0 })
+  assert.deepEqual(effects.find(e => e.event === 'linear_sync').data, { added: 2, completed: 0, parked: 0 })
 })
 
 test('LINEAR_SYNC ignores completed issues it has never seen', () => {
@@ -850,7 +850,7 @@ test('LINEAR_SYNC ticks a linked task when its issue is closed in Linear, and fo
   ] }, T0, LIN)
   assert.deepEqual(state.tasks.map(t => [t.text, t.done]),
     [['title 1', true], ['title 2', true], ['renamed in Linear', false]])
-  assert.deepEqual(effects.find(e => e.event === 'linear_sync').data, { added: 0, completed: 2 })
+  assert.deepEqual(effects.find(e => e.event === 'linear_sync').data, { added: 0, completed: 2, parked: 0 })
   assert.equal(effects.some(e => e.type === 'linearSetDone'), false, 'no echo back to Linear')
 })
 
@@ -989,4 +989,31 @@ test('LINEAR_SYNC links a pending task to the issue it already created instead o
   assert.equal(state.tasks.length, 1)
   assert.equal(state.tasks[0].linear.id, 'uuid-1')
   assert.equal(state.tasks[0].linearPending, false)
+})
+
+// Asked for by the user: Linear is the source of truth for where a ticket sits.
+// A linked task whose issue is parked in Backlog (or Triage) leaves the list —
+// it is not deleted anywhere, and it is not dismissed, so moving the issue back
+// to Todo / In Progress brings it back on the next sync.
+test('LINEAR_SYNC takes a linked task off the list when its issue is in Backlog', () => {
+  let s = reduce(initialState(), { type: 'TASK_ADD', text: 'local only' }, T0, LIN).state     // never linked
+  s = reduce(s, { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'unstarted'), ISSUE('2', 'started')] }, T0, LIN).state
+  const { state, effects } = reduce(s, { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'backlog'), ISSUE('2', 'triage')] }, T0, LIN)
+  assert.deepEqual(state.tasks.map(t => t.text), ['local only'], 'only the unlinked task stays')
+  assert.deepEqual(state.linearDismissed, [], 'parked, not dismissed')
+  assert.equal(effects.some(e => e.type === 'linearCancel' || e.type === 'linearSetDone'), false, 'Linear is not touched')
+  assert.deepEqual(effects.find(e => e.event === 'linear_sync').data, { added: 0, completed: 0, parked: 2 })
+})
+
+test('a parked issue moved back to Todo comes back to the list', () => {
+  let s = reduce(initialState(), { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'unstarted')] }, T0, LIN).state
+  s = reduce(s, { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'backlog')] }, T0, LIN).state
+  assert.deepEqual(s.tasks, [])
+  s = reduce(s, { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'unstarted')] }, T0, LIN).state
+  assert.deepEqual(s.tasks.map(t => t.linear.identifier), ['IBR-1'])
+})
+
+test('LINEAR_SYNC never imports a Backlog issue it has not seen', () => {
+  const { state } = reduce(initialState(), { type: 'LINEAR_SYNC', issues: [ISSUE('1', 'backlog')] }, T0, LIN)
+  assert.deepEqual(state.tasks, [])
 })
